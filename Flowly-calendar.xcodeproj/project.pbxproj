@@ -6,6 +6,11 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		851B4EFE2EA7B3620081FAD1 /* GoogleSignIn in Frameworks */ = {isa = PBXBuildFile; productRef = 851B4EFD2EA7B3620081FAD1 /* GoogleSignIn */; };
+		851B4F002EA7B3620081FAD1 /* GoogleSignInSwift in Frameworks */ = {isa = PBXBuildFile; productRef = 851B4EFF2EA7B3620081FAD1 /* GoogleSignInSwift */; };
+/* End PBXBuildFile section */
+
 /* Begin PBXContainerItemProxy section */
 		85635CCC2E9D256100521297 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
@@ -29,9 +34,22 @@
 		85635CD52E9D256100521297 /* Flowly-calendarUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = "Flowly-calendarUITests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		85BD8A632E9D7DC600D3898E /* Exceptions for "Flowly-calendar" folder in "Flowly-calendar" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = 85635CBD2E9D256000521297 /* Flowly-calendar */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
+
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		85635CC02E9D256000521297 /* Flowly-calendar */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				85BD8A632E9D7DC600D3898E /* Exceptions for "Flowly-calendar" folder in "Flowly-calendar" target */,
+			);
 			path = "Flowly-calendar";
 			sourceTree = "<group>";
 		};
@@ -52,6 +70,8 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				851B4EFE2EA7B3620081FAD1 /* GoogleSignIn in Frameworks */,
+				851B4F002EA7B3620081FAD1 /* GoogleSignInSwift in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -112,6 +132,8 @@
 			);
 			name = "Flowly-calendar";
 			packageProductDependencies = (
+				851B4EFD2EA7B3620081FAD1 /* GoogleSignIn */,
+				851B4EFF2EA7B3620081FAD1 /* GoogleSignInSwift */,
 			);
 			productName = "Flowly-calendar";
 			productReference = 85635CBE2E9D256000521297 /* Flowly-calendar.app */;
@@ -195,6 +217,9 @@
 			);
 			mainGroup = 85635CB52E9D256000521297;
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				851B4EFC2EA7B04D0081FAD1 /* XCRemoteSwiftPackageReference "GoogleSignIn-iOS" */,
+			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 85635CBF2E9D256000521297 /* Products */;
 			projectDirPath = "";
@@ -400,6 +425,8 @@
 				DEVELOPMENT_TEAM = T6392L35GD;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = "Flowly-calendar/Info.plist";
+				INFOPLIST_KEY_LSApplicationCategoryType = "";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -428,6 +455,8 @@
 				DEVELOPMENT_TEAM = T6392L35GD;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = "Flowly-calendar/Info.plist";
+				INFOPLIST_KEY_LSApplicationCategoryType = "";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -558,6 +587,30 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		851B4EFC2EA7B04D0081FAD1 /* XCRemoteSwiftPackageReference "GoogleSignIn-iOS" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/google/GoogleSignIn-iOS";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 9.0.0;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		851B4EFD2EA7B3620081FAD1 /* GoogleSignIn */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 851B4EFC2EA7B04D0081FAD1 /* XCRemoteSwiftPackageReference "GoogleSignIn-iOS" */;
+			productName = GoogleSignIn;
+		};
+		851B4EFF2EA7B3620081FAD1 /* GoogleSignInSwift */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 851B4EFC2EA7B04D0081FAD1 /* XCRemoteSwiftPackageReference "GoogleSignIn-iOS" */;
+			productName = GoogleSignInSwift;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = 85635CB62E9D256000521297 /* Project object */;
 }
