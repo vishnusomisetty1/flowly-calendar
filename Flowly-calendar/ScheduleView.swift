@@ -14,6 +14,7 @@ struct ScheduleScreen: View {
     @Binding var user: User
     @Binding var scheduleItems: [ScheduleItem]
     @Binding var assignments: [Assignment]
+    @Binding var reminders: [Reminder]
     @Binding var selectedDate: Date
     var classrooms: [GoogleClassroom]
     @Binding var currentScreen: ContentView.Screen
@@ -50,9 +51,9 @@ struct ScheduleScreen: View {
 
                 switch viewMode {
                 case .day:
-                    DayView(scheduleItems: $scheduleItems, selectedDate: $selectedDate)
+                    DayView(scheduleItems: $scheduleItems, selectedDate: $selectedDate, reminders: $reminders)
                 case .week:
-                    WeekView(scheduleItems: $scheduleItems, selectedDate: $selectedDate)
+                    WeekView(scheduleItems: $scheduleItems, selectedDate: $selectedDate, reminders: $reminders)
                         .frame(maxHeight: .infinity)
                 case .month:
                     MonthView(scheduleItems: $scheduleItems, selectedDate: $selectedDate)
@@ -86,6 +87,9 @@ struct ScheduleScreen: View {
         .onChangeCompat(assignments) { _, newValue in
             if !newValue.isEmpty { generateAISchedule() }
         }
+        .onChangeCompat(reminders) { _, newValue in
+            if !newValue.isEmpty { generateAISchedule() }
+        }
     }
 
     // MARK: Header
@@ -112,7 +116,7 @@ struct ScheduleScreen: View {
     }
 
     private func autoSyncIfNeeded() async {
-        guard assignments.isEmpty else { return }
+        guard assignments.isEmpty && reminders.isEmpty else { return }
         guard classroomsStore.hasChosenOnce, !classroomsStore.allClassrooms.isEmpty else { return }
 
         isSyncing = true; syncError = nil
@@ -121,8 +125,10 @@ struct ScheduleScreen: View {
             user.googleToken = token
             if user.googleEmail.isEmpty { user.googleEmail = email }
 
-            let fetched = try await AssignmentSync.fetchForSelectedClasses(token: token, classes: classroomsStore.allClassrooms)
-            assignments = fetched
+            let fetchedAssignments = try await AssignmentSync.fetchForSelectedClasses(token: token, classes: classroomsStore.allClassrooms)
+            let fetchedReminders = try await AssignmentSync.fetchRemindersForSelectedClasses(token: token, classes: classroomsStore.allClassrooms)
+            assignments = fetchedAssignments
+            reminders = fetchedReminders
             isSyncing = false
         } catch {
             syncError = "Sync failed: \(error.localizedDescription)"
@@ -132,6 +138,7 @@ struct ScheduleScreen: View {
 
     private func manualRefresh() async {
         assignments.removeAll()
+        reminders.removeAll()
         await autoSyncIfNeeded()
     }
 }
@@ -141,10 +148,55 @@ struct ScheduleScreen: View {
 private struct DayView: View {
     @Binding var scheduleItems: [ScheduleItem]
     @Binding var selectedDate: Date
+    @Binding var reminders: [Reminder]
 
     private var dayItems: [ScheduleItem] {
         scheduleItems.filter { Calendar.current.isDate($0.startTime, inSameDayAs: selectedDate) }
             .sorted { $0.startTime < $1.startTime }
+    }
+    
+    // Assignment subcategories
+    private var activeAssignments: [ScheduleItem] {
+        dayItems.filter { item in
+            let isActuallyCompleted = item.isCompleted || (item.associatedAssignment?.isCompleted ?? false)
+            return !isActuallyCompleted && !isOverdue(item: item)
+        }
+    }
+    
+    private var completedAssignments: [ScheduleItem] {
+        dayItems.filter { item in
+            let isActuallyCompleted = item.isCompleted || (item.associatedAssignment?.isCompleted ?? false)
+            return isActuallyCompleted
+        }
+    }
+    
+    private var missingAssignments: [ScheduleItem] {
+        dayItems.filter { item in
+            let isActuallyCompleted = item.isCompleted || (item.associatedAssignment?.isCompleted ?? false)
+            return !isActuallyCompleted && isOverdue(item: item)
+        }
+    }
+    
+    // Reminder subcategories
+    private var activeReminders: [Reminder] {
+        reminders.filter { !$0.isCompleted && !isMissing(reminder: $0) }
+    }
+    
+    private var completedReminders: [Reminder] {
+        reminders.filter { $0.isCompleted }
+    }
+    
+    private var missingReminders: [Reminder] {
+        reminders.filter { !$0.isCompleted && isMissing(reminder: $0) }
+    }
+    
+    private func isOverdue(item: ScheduleItem) -> Bool {
+        guard let assignment = item.associatedAssignment else { return false }
+        return assignment.dueDate < Date()
+    }
+    
+    private func isMissing(reminder: Reminder) -> Bool {
+        return reminder.eventDate < Date()
     }
 
     var body: some View {
@@ -154,23 +206,139 @@ private struct DayView: View {
                 .padding(.horizontal)
 
             ScrollView {
-                if dayItems.isEmpty {
-                    VStack(spacing: 14) {
-                        Image(systemName: "calendar.badge.exclamationmark").font(.system(size: 40)).foregroundColor(.gray)
-                        Text("No schedule for this day").font(.headline)
+                VStack(spacing: 16) {
+                    // ASSIGNMENTS SECTION
+                    VStack(alignment: .leading, spacing: 12) {
+                        if !dayItems.isEmpty {
+                            Text("Assignments")
+                                .font(.title2)
+                                .fontWeight(.bold)
+                                .padding(.horizontal)
+                            
+                            // Active Assignments (not completed, not overdue)
+                            ForEach($scheduleItems) { $item in
+                                if Calendar.current.isDate(item.startTime, inSameDayAs: selectedDate) && 
+                                   !item.isCompleted && !isOverdue(item: item) {
+                                    ScheduleItemRow(item: $item)
+                                }
+                            }
+                            .padding(.horizontal)
+                            
+                            // Missing Assignments (overdue)
+                            ForEach($scheduleItems) { $item in
+                                if Calendar.current.isDate(item.startTime, inSameDayAs: selectedDate) && 
+                                   isOverdue(item: item) {
+                                    ScheduleItemRow(item: $item)
+                                }
+                            }
+                            .padding(.horizontal)
+                        }
                     }
-                    .frame(maxHeight: .infinity, alignment: .center)
-                    .padding()
-                } else {
-                    VStack(spacing: 10) {
-                        ForEach($scheduleItems) { $item in
-                            if Calendar.current.isDate(item.startTime, inSameDayAs: selectedDate) {
-                                ScheduleItemRow(item: $item)
+                    
+                    // COMPLETED ASSIGNMENTS SECTION
+                    VStack(alignment: .leading, spacing: 10) {
+                        if !completedAssignments.isEmpty {
+                            Divider()
+                                .padding(.vertical, 8)
+                            
+                            Text("Completed Assignments")
+                                .font(.title2)
+                                .fontWeight(.bold)
+                                .padding(.horizontal)
+                            
+                            ForEach($scheduleItems) { $item in
+                                if Calendar.current.isDate(item.startTime, inSameDayAs: selectedDate) {
+                                    let isActuallyCompleted = item.isCompleted || (item.associatedAssignment?.isCompleted ?? false)
+                                    if isActuallyCompleted {
+                                        ScheduleItemRow(item: $item)
+                                    }
+                                }
+                            }
+                            .padding(.horizontal)
+                        }
+                    }
+                    
+                    // COMPLETED ASSIGNMENTS SECTION
+                    VStack(alignment: .leading, spacing: 10) {
+                        if !completedAssignments.isEmpty {
+                            Divider()
+                                .padding(.vertical, 8)
+                            
+                            Text("Completed Assignments")
+                                .font(.title2)
+                                .fontWeight(.bold)
+                                .padding(.horizontal)
+                            
+                            ForEach($scheduleItems) { $item in
+                                if Calendar.current.isDate(item.startTime, inSameDayAs: selectedDate) {
+                                    let isActuallyCompleted = item.isCompleted || (item.associatedAssignment?.isCompleted ?? false)
+                                    if isActuallyCompleted {
+                                        ScheduleItemRow(item: $item)
+                                    }
+                                }
+                            }
+                            .padding(.horizontal)
+                        }
+                    }
+                    
+                    // REMINDERS SECTION
+                    if !reminders.isEmpty {
+                        Divider()
+                            .padding(.vertical, 8)
+                        
+                        VStack(alignment: .leading, spacing: 12) {
+                            HStack {
+                                Text("Reminders")
+                                    .font(.title2)
+                                    .fontWeight(.bold)
+                                Image(systemName: "star.fill")
+                                    .foregroundColor(.orange)
+                                    .font(.caption)
+                                Text("(\(reminders.count))")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                            }
+                            .padding(.horizontal)
+                            
+                            // Active Reminders (not completed, not past event date)
+                            ForEach(reminders.indices, id: \.self) { index in
+                                if !reminders[index].isCompleted && !isMissing(reminder: reminders[index]) {
+                                    ReminderRow(reminder: $reminders[index])
+                                        .padding(.horizontal)
+                                }
+                            }
+                            
+                            // Missing Reminders (not completed, past event date)
+                            ForEach(reminders.indices, id: \.self) { index in
+                                if !reminders[index].isCompleted && isMissing(reminder: reminders[index]) {
+                                    ReminderRow(reminder: $reminders[index])
+                                        .padding(.horizontal)
+                                }
+                            }
+                            
+                            // Completed Reminders
+                            ForEach(reminders.indices, id: \.self) { index in
+                                if reminders[index].isCompleted {
+                                    ReminderRow(reminder: $reminders[index])
+                                        .padding(.horizontal)
+                                }
                             }
                         }
                     }
-                    .padding()
+                    
+                    if dayItems.isEmpty && reminders.isEmpty {
+                        VStack(spacing: 14) {
+                            Image(systemName: "calendar.badge.exclamationmark")
+                                .font(.system(size: 40))
+                                .foregroundColor(.gray)
+                            Text("No schedule for this day")
+                                .font(.headline)
+                        }
+                        .frame(maxHeight: .infinity, alignment: .center)
+                        .padding()
+                    }
                 }
+                .padding(.vertical)
             }
         }
     }
@@ -179,6 +347,7 @@ private struct DayView: View {
 private struct WeekView: View {
     @Binding var scheduleItems: [ScheduleItem]
     @Binding var selectedDate: Date
+    @Binding var reminders: [Reminder]
 
     private let cal = Calendar.current
     private var startOfDisplayedWeek: Date {
@@ -186,6 +355,67 @@ private struct WeekView: View {
         return cal.date(from: cal.dateComponents([.yearForWeekOfYear, .weekOfYear], from: base)) ?? base
     }
     private var days: [Date] { (0..<7).compactMap { cal.date(byAdding: .day, value: $0, to: startOfDisplayedWeek) } }
+    
+    private var dayItems: [ScheduleItem] {
+        scheduleItems.filter { cal.isDate($0.startTime, inSameDayAs: selectedDate) }
+            .sorted { $0.startTime < $1.startTime }
+    }
+    
+    // Assignment subcategories
+    private var activeAssignments: [ScheduleItem] {
+        scheduleItems.filter { item in
+            // Check if the assignment is within the current week
+            let isInWeek = days.contains { day in
+                cal.isDate(item.startTime, inSameDayAs: day)
+            }
+            let isActuallyCompleted = item.isCompleted || (item.associatedAssignment?.isCompleted ?? false)
+            return isInWeek && !isActuallyCompleted && !isOverdue(item: item)
+        }
+    }
+    
+    private var completedAssignments: [ScheduleItem] {
+        scheduleItems.filter { item in
+            // Check if the assignment is within the current week
+            let isInWeek = days.contains { day in
+                cal.isDate(item.startTime, inSameDayAs: day)
+            }
+            let isActuallyCompleted = item.isCompleted || (item.associatedAssignment?.isCompleted ?? false)
+            return isInWeek && isActuallyCompleted
+        }
+    }
+    
+    private var missingAssignments: [ScheduleItem] {
+        scheduleItems.filter { item in
+            // Check if the assignment is within the current week
+            let isInWeek = days.contains { day in
+                cal.isDate(item.startTime, inSameDayAs: day)
+            }
+            let isActuallyCompleted = item.isCompleted || (item.associatedAssignment?.isCompleted ?? false)
+            return isInWeek && !isActuallyCompleted && isOverdue(item: item)
+        }
+    }
+    
+    // Reminder subcategories
+    private var activeReminders: [Reminder] {
+        reminders.filter { !$0.isCompleted && !isMissing(reminder: $0) }
+    }
+    
+    private var completedReminders: [Reminder] {
+        reminders.filter { $0.isCompleted }
+    }
+    
+    private var missingReminders: [Reminder] {
+        reminders.filter { !$0.isCompleted && isMissing(reminder: $0) }
+    }
+    
+    private func isOverdue(item: ScheduleItem) -> Bool {
+        guard let assignment = item.associatedAssignment else { return false }
+        return assignment.dueDate < Date()
+    }
+    
+    private func isMissing(reminder: Reminder) -> Bool {
+        return reminder.eventDate < Date()
+    }
 
     var body: some View {
         VStack(spacing: 16) {
@@ -247,23 +477,124 @@ private struct WeekView: View {
                 .sorted { $0.startTime < $1.startTime }
 
             ScrollView {
-                if dayItems.isEmpty {
-                    VStack(spacing: 14) {
-                        Image(systemName: "calendar.badge.exclamationmark").font(.system(size: 40)).foregroundColor(.gray)
-                        Text("No schedule for this day").font(.headline)
+                VStack(spacing: 16) {
+                    // ASSIGNMENTS SECTION
+                    VStack(alignment: .leading, spacing: 12) {
+                        if !dayItems.isEmpty {
+                            Text("Assignments")
+                                .font(.title2)
+                                .fontWeight(.bold)
+                                .padding(.horizontal)
+                            
+                            // Active Assignments (not completed, not overdue)
+                            ForEach($scheduleItems) { $item in
+                                // Check if the assignment is within the current week
+                                let isInWeek = days.contains { day in
+                                    cal.isDate(item.startTime, inSameDayAs: day)
+                                }
+                                if isInWeek && !item.isCompleted && !isOverdue(item: item) {
+                                    ScheduleItemRow(item: $item)
+                                }
+                            }
+                            .padding(.horizontal)
+                            
+                            // Missing Assignments (overdue)
+                            ForEach($scheduleItems) { $item in
+                                // Check if the assignment is within the current week
+                                let isInWeek = days.contains { day in
+                                    cal.isDate(item.startTime, inSameDayAs: day)
+                                }
+                                if isInWeek && isOverdue(item: item) {
+                                    ScheduleItemRow(item: $item)
+                                }
+                            }
+                            .padding(.horizontal)
+                        }
                     }
-                    .frame(maxHeight: .infinity, alignment: .center)
-                    .padding()
-                } else {
-                    VStack(spacing: 10) {
-                        ForEach($scheduleItems) { $item in
-                            if cal.isDate(item.startTime, inSameDayAs: selectedDate) {
-                                ScheduleItemRow(item: $item)
+                    
+                    // COMPLETED ASSIGNMENTS SECTION
+                    VStack(alignment: .leading, spacing: 10) {
+                        if !completedAssignments.isEmpty {
+                            Divider()
+                                .padding(.vertical, 8)
+                            
+                            Text("Completed Assignments")
+                                .font(.title2)
+                                .fontWeight(.bold)
+                                .padding(.horizontal)
+                            
+                            ForEach($scheduleItems) { $item in
+                                // Check if the assignment is within the current week
+                                let isInWeek = days.contains { day in
+                                    cal.isDate(item.startTime, inSameDayAs: day)
+                                }
+                                let isActuallyCompleted = item.isCompleted || (item.associatedAssignment?.isCompleted ?? false)
+                                if isInWeek && isActuallyCompleted {
+                                    ScheduleItemRow(item: $item)
+                                }
+                            }
+                            .padding(.horizontal)
+                        }
+                    }
+                    
+                    // REMINDERS SECTION
+                    if !reminders.isEmpty {
+                        Divider()
+                            .padding(.vertical, 8)
+                        
+                        VStack(alignment: .leading, spacing: 12) {
+                            HStack {
+                                Text("Reminders")
+                                    .font(.title2)
+                                    .fontWeight(.bold)
+                                Image(systemName: "star.fill")
+                                    .foregroundColor(.orange)
+                                    .font(.caption)
+                                Text("(\(reminders.count))")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                            }
+                            .padding(.horizontal)
+                            
+                            // Active Reminders (not completed, not past event date)
+                            ForEach(reminders.indices, id: \.self) { index in
+                                if !reminders[index].isCompleted && !isMissing(reminder: reminders[index]) {
+                                    ReminderRow(reminder: $reminders[index])
+                                        .padding(.horizontal)
+                                }
+                            }
+                            
+                            // Missing Reminders (not completed, past event date)
+                            ForEach(reminders.indices, id: \.self) { index in
+                                if !reminders[index].isCompleted && isMissing(reminder: reminders[index]) {
+                                    ReminderRow(reminder: $reminders[index])
+                                        .padding(.horizontal)
+                                }
+                            }
+                            
+                            // Completed Reminders
+                            ForEach(reminders.indices, id: \.self) { index in
+                                if reminders[index].isCompleted {
+                                    ReminderRow(reminder: $reminders[index])
+                                        .padding(.horizontal)
+                                }
                             }
                         }
                     }
-                    .padding()
+                    
+                    if dayItems.isEmpty && reminders.isEmpty {
+                        VStack(spacing: 14) {
+                            Image(systemName: "calendar.badge.exclamationmark")
+                                .font(.system(size: 40))
+                                .foregroundColor(.gray)
+                            Text("No schedule for this day")
+                                .font(.headline)
+                        }
+                        .frame(maxHeight: .infinity, alignment: .center)
+                        .padding()
+                    }
                 }
+                .padding(.vertical)
             }
         }
     }
@@ -470,20 +801,51 @@ private struct ScheduleItemRow: View {
         guard let assignment = item.associatedAssignment else { return false }
         return assignment.dueDate < Date()
     }
+    
+    private var isActuallyCompleted: Bool {
+        // For assignments, check both schedule item completion AND assignment completion
+        if let assignment = item.associatedAssignment {
+            return item.isCompleted || assignment.isCompleted
+        }
+        // For reminders, just check schedule item completion
+        return item.isCompleted
+    }
+    
+    private var isReminder: Bool {
+        return item.type == "reminder"
+    }
+    
+    private var reminderEventDate: String? {
+        guard isReminder else { return nil }
+        let formatter = DateFormatter()
+        formatter.dateStyle = .short
+        formatter.timeStyle = .short
+        formatter.timeZone = TimeZone.current
+        return "Event: \(formatter.string(from: item.startTime))"
+    }
 
     var body: some View {
         HStack(spacing: 12) {
             VStack(spacing: 4) {
                 Text(timeString).font(.caption).bold()
-                Image(systemName: (item.isCompleted || isOverdue) ? "checkmark.circle.fill" : "circle")
-                    .foregroundColor((item.isCompleted || isOverdue) ? .green : .gray)
+                Image(systemName: (isActuallyCompleted || (isOverdue && !isReminder)) ? "checkmark.circle.fill" : "circle")
+                    .foregroundColor(
+                        isReminder ? 
+                            (item.isCompleted ? .orange : .gray) :
+                            ((isActuallyCompleted || isOverdue) ? .green : .gray)
+                    )
             }
             .frame(width: 56)
 
             VStack(alignment: .leading, spacing: 6) {
                 Text(item.title)
                     .font(.headline)
-                    .strikethrough(item.isCompleted || isOverdue)
+                    .foregroundColor(
+                        isReminder ? 
+                            (isOverdue ? .red : .primary) :
+                            (isActuallyCompleted ? .primary : (isOverdue ? .red : .primary))
+                    )
+                    .strikethrough(isActuallyCompleted || (isOverdue && !isReminder))
 
                 HStack(spacing: 6) {
                     Text(item.type.capitalized)
@@ -502,21 +864,34 @@ private struct ScheduleItemRow: View {
                     }
                 }
 
-                // Show due date for assignments
+                // Show due date for assignments or event date for reminders
                 if let dueDate = dueDateString {
                     Text(dueDate)
                         .font(.caption2)
                         .foregroundColor(isOverdue ? .red : .secondary)
                         .fontWeight(isOverdue ? .semibold : .regular)
+                } else if let eventDate = reminderEventDate {
+                    Text(eventDate)
+                        .font(.caption2)
+                        .foregroundColor(.orange)
+                        .fontWeight(.medium)
                 }
             }
             Spacer()
         }
         .padding()
-        .background((item.isCompleted || isOverdue) ? Color.green.opacity(0.1) : Color(.systemGray6))
+        .background(
+            isReminder ? 
+                (item.isCompleted ? Color.orange.opacity(0.1) : Color.orange.opacity(0.05)) :
+                (isActuallyCompleted || isOverdue ? Color.green.opacity(0.1) : Color(.systemGray6))
+        )
         .cornerRadius(10)
         .onTapGesture {
-            if !isOverdue {
+            if isReminder {
+                // For reminders, always allow completion toggle
+                item.isCompleted.toggle()
+            } else if !isOverdue {
+                // For assignments, only allow completion if not overdue
                 item.isCompleted.toggle()
             }
         }
@@ -572,5 +947,84 @@ private struct AddTaskSheet: View {
         }
         .padding()
         .background(Color(.systemBackground))
+    }
+}
+
+// MARK: - Reminder Row
+
+private struct ReminderRow: View {
+    @Binding var reminder: Reminder
+    
+    private var timeString: String {
+        let f = DateFormatter(); f.timeStyle = .short
+        return f.string(from: reminder.eventDate)
+    }
+    
+    private var eventDateString: String {
+        let formatter = DateFormatter()
+        formatter.dateStyle = .short
+        formatter.timeStyle = .short
+        formatter.timeZone = TimeZone.current
+        return "Event: \(formatter.string(from: reminder.eventDate))"
+    }
+    
+    private var isOverdue: Bool {
+        return reminder.eventDate < Date()
+    }
+    
+    private var reminderIcon: String {
+        switch reminder.reminderType {
+        case .meeting: return "👥"
+        case .deadline: return "⏰"
+        case .event: return "📅"
+        }
+    }
+    
+    var body: some View {
+        HStack(spacing: 12) {
+            VStack(spacing: 4) {
+                Text(timeString).font(.caption).bold()
+                Image(systemName: reminder.isCompleted ? "checkmark.circle.fill" : "circle")
+                    .foregroundColor(reminder.isCompleted ? .orange : .gray)
+            }
+            .frame(width: 56)
+            
+            VStack(alignment: .leading, spacing: 6) {
+                Text("\(reminderIcon) \(reminder.title)")
+                    .font(.headline)
+                    .foregroundColor(isOverdue ? .red : .primary)
+                    .strikethrough(reminder.isCompleted)
+                
+                HStack(spacing: 6) {
+                    Text(reminder.reminderType.displayName)
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                    
+                    Text(reminder.classroom)
+                        .font(.caption2)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 3)
+                        .background(Color.orange.opacity(0.15))
+                        .foregroundColor(.orange)
+                        .cornerRadius(6)
+                        .lineLimit(1)
+                }
+                
+                Text(eventDateString)
+                    .font(.caption2)
+                    .foregroundColor(isOverdue ? .red : .orange)
+                    .fontWeight(.medium)
+            }
+            Spacer()
+        }
+        .padding()
+        .background(
+            reminder.isCompleted ? Color.orange.opacity(0.1) : Color.orange.opacity(0.05)
+        )
+        .cornerRadius(10)
+        .onTapGesture {
+            // For reminders, always allow completion toggle
+            reminder.isCompleted.toggle()
+        }
     }
 }

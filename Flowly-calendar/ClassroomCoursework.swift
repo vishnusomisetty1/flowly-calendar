@@ -118,6 +118,35 @@ extension ClassroomCoursework {
             hasRealDueDate: hasRealDue
         )
     }
+    
+    func toReminder(courseName: String) -> Reminder {
+        let eventDate = Self.composeDate(dueDate, dueTime: dueTime)
+        let hasRealDate = eventDate != nil
+
+        // For reminders without dates, set event date to 1 day from now
+        // This gives a reasonable reminder time for club events
+        let reminderEventDate = eventDate ?? Calendar.current.date(byAdding: .day, value: 1, to: Date()) ?? Date()
+        
+        // Determine reminder type based on work type
+        let reminderType: Reminder.ReminderType
+        switch workType {
+        case "ASSIGNMENT":
+            reminderType = .deadline
+        case "SHORT_ANSWER_QUESTION", "MULTIPLE_CHOICE_QUESTION":
+            reminderType = .meeting
+        default:
+            reminderType = .event
+        }
+
+        return Reminder(
+            title: title,
+            eventDate: reminderEventDate,
+            classroom: courseName,
+            description: description ?? "",
+            courseId: courseId,
+            reminderType: reminderType
+        )
+    }
 
     private static func composeDate(_ d: DueDate?, dueTime: DueTime?) -> Date? {
         guard let d else { return nil }

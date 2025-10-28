@@ -82,10 +82,59 @@ struct Assignment: Identifiable, Codable, Equatable {
     var hasRealDueDate: Bool = true
     // NEW: for spaced repetition - days until next review
     var reviewInterval: Int = 0
+    // NEW: whether this assignment has been completed/turned in
+    var isCompleted: Bool = false
+}
+
+struct Reminder: Identifiable, Codable, Equatable {
+    var id = UUID()
+    var title: String
+    var eventDate: Date
+    var classroom: String
+    var description: String
+    var courseId: String?
+    var isCompleted: Bool = false
+    
+    // For club classes - these are just reminders of events, not assignments
+    var reminderType: ReminderType = .event
+    
+    enum ReminderType: String, Codable, Equatable {
+        case event = "event"
+        case meeting = "meeting"
+        case deadline = "deadline"
+        
+        var displayName: String {
+            switch self {
+            case .event: return "Event"
+            case .meeting: return "Meeting"
+            case .deadline: return "Deadline"
+            }
+        }
+    }
+}
+
+enum ClassType: String, Codable, Equatable {
+    case regular = "regular"
+    case club = "club"
+    
+    var displayName: String {
+        switch self {
+        case .regular: return "Regular Class"
+        case .club: return "Club Class"
+        }
+    }
+    
+    var description: String {
+        switch self {
+        case .regular: return "Regular academic class with assignments"
+        case .club: return "Club class with reminders only (no assignments)"
+        }
+    }
 }
 
 struct GoogleClassroom: Identifiable, Codable, Equatable, Hashable {
     var id: String
     var name: String
     var isSelected: Bool = false
+    var classType: ClassType = .regular
 }

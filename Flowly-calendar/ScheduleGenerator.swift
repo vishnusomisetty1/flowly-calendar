@@ -48,6 +48,8 @@ struct ScheduleGenerator {
             items.append(ScheduleItem(title: user.homeActivity, startTime: start, endTime: end, type: "break"))
         }
 
+
+
         // Fill study blocks
         for i in 0..<7 {
             let day = cal.date(byAdding: .day, value: i, to: startOfDay)!

@@ -8,6 +8,7 @@ struct ContentView: View {
 
     @State private var scheduleItems: [ScheduleItem] = []
     @State private var assignments: [Assignment] = []
+    @State private var reminders: [Reminder] = []
     @State private var classrooms: [GoogleClassroom] = []
     @State private var selectedDate = Date()
 
@@ -45,7 +46,8 @@ struct ContentView: View {
                             currentScreen: $currentScreen,
                             user: $userStore.user,
                             classrooms: $classrooms,
-                            assignments: $assignments
+                            assignments: $assignments,
+                            reminders: $reminders
                         )
 
                     case .schedule:
@@ -53,6 +55,7 @@ struct ContentView: View {
                             user: $userStore.user,
                             scheduleItems: $scheduleItems,
                             assignments: $assignments,
+                            reminders: $reminders,
                             selectedDate: $selectedDate,
                             classrooms: classrooms,
                             currentScreen: $currentScreen

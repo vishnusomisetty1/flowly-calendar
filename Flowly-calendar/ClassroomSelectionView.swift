@@ -10,6 +10,7 @@ struct ClassroomSelectionView: View {
     @Binding var user: User
     @Binding var classrooms: [GoogleClassroom]
     @Binding var assignments: [Assignment]
+    @Binding var reminders: [Reminder]
 
     @State private var isWorking = false
     @State private var errorMessage: String?
@@ -39,9 +40,36 @@ struct ClassroomSelectionView: View {
                 List {
                     Section {
                         ForEach($classrooms) { $c in
-                            Toggle(isOn: $c.isSelected) {
-                                Text(c.name.isEmpty ? "Untitled" : c.name)
+                            VStack(alignment: .leading, spacing: 8) {
+                                HStack {
+                                    Toggle(isOn: $c.isSelected) {
+                                        Text(c.name.isEmpty ? "Untitled" : c.name)
+                                            .font(.body)
+                                    }
+                                }
+                                
+                                if c.isSelected {
+                                    HStack {
+                                        Text("Class Type:")
+                                            .font(.caption)
+                                            .foregroundColor(.secondary)
+                                        
+                                        Picker("Class Type", selection: $c.classType) {
+                                            Text(ClassType.regular.displayName).tag(ClassType.regular)
+                                            Text(ClassType.club.displayName).tag(ClassType.club)
+                                        }
+                                        .pickerStyle(SegmentedPickerStyle())
+                                        .frame(maxWidth: 200)
+                                    }
+                                    .padding(.leading, 20)
+                                    
+                                    Text(c.classType.description)
+                                        .font(.caption2)
+                                        .foregroundColor(.secondary)
+                                        .padding(.leading, 20)
+                                }
                             }
+                            .padding(.vertical, 4)
                         }
                     } header: { Text("Your Google Classroom courses") }
                 }
