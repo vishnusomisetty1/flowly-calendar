@@ -103,58 +103,44 @@ extension ClassroomCoursework {
         let due = Self.composeDate(dueDate, dueTime: dueTime)
         let hasRealDue = due != nil
 
-        // For assignments without due dates, set due date to 3 days from now
-        // This gives students time to work on study materials
-        let assignmentDueDate = due ?? Calendar.current.date(byAdding: .day, value: 3, to: Date()) ?? Date()
+        // For assignments without due dates, use a placeholder date (won't be used for sorting/grouping)
+        let assignmentDueDate = due ?? Date.distantFuture
 
         return Assignment(
             title: title,
             dueDate: assignmentDueDate,
             classroom: courseName,
             description: description ?? "",
-            estimatedMinutes: 45,
-            priority: 2,
             courseId: courseId,
+            isCompleted: false,
             hasRealDueDate: hasRealDue
-        )
-    }
-    
-    func toReminder(courseName: String) -> Reminder {
-        let eventDate = Self.composeDate(dueDate, dueTime: dueTime)
-        let hasRealDate = eventDate != nil
-
-        // For reminders without dates, set event date to 1 day from now
-        // This gives a reasonable reminder time for club events
-        let reminderEventDate = eventDate ?? Calendar.current.date(byAdding: .day, value: 1, to: Date()) ?? Date()
-        
-        // Determine reminder type based on work type
-        let reminderType: Reminder.ReminderType
-        switch workType {
-        case "ASSIGNMENT":
-            reminderType = .deadline
-        case "SHORT_ANSWER_QUESTION", "MULTIPLE_CHOICE_QUESTION":
-            reminderType = .meeting
-        default:
-            reminderType = .event
-        }
-
-        return Reminder(
-            title: title,
-            eventDate: reminderEventDate,
-            classroom: courseName,
-            description: description ?? "",
-            courseId: courseId,
-            reminderType: reminderType
         )
     }
 
     private static func composeDate(_ d: DueDate?, dueTime: DueTime?) -> Date? {
         guard let d else { return nil }
-        var comps = DateComponents()
-        comps.year = d.year; comps.month = d.month; comps.day = d.day
-        comps.hour = dueTime?.hours ?? 23
-        comps.minute = dueTime?.minutes ?? 59
-        comps.second = dueTime?.seconds ?? 0
-        return Calendar.current.date(from: comps)
+        
+        // IMPORTANT: Google Classroom API returns dates in UTC timezone
+        // We need to create the date in UTC first, then it will be correctly converted
+        
+        var utcComps = DateComponents()
+        utcComps.year = d.year
+        utcComps.month = d.month
+        utcComps.day = d.day
+        utcComps.hour = dueTime?.hours ?? 23
+        utcComps.minute = dueTime?.minutes ?? 59
+        utcComps.second = dueTime?.seconds ?? 0
+        utcComps.timeZone = TimeZone(identifier: "UTC")  // Explicitly set to UTC
+        
+        // Create UTC calendar to build the date
+        var utcCalendar = Calendar.current
+        utcCalendar.timeZone = TimeZone(identifier: "UTC")!
+        
+        // Create the date in UTC
+        guard let utcDate = utcCalendar.date(from: utcComps) else { return nil }
+        
+        // Return the UTC date - Swift Date objects store UTC internally
+        // When displayed or compared, they'll automatically convert to local timezone
+        return utcDate
     }
 }

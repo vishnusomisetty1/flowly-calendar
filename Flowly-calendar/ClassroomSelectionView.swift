@@ -2,16 +2,14 @@ import SwiftUI
 
 @MainActor
 struct ClassroomSelectionView: View {
-    @EnvironmentObject private var theme: ThemeManager
     @EnvironmentObject private var classroomsStore: ClassroomsStore
     @EnvironmentObject private var auth: AuthManager
+    @EnvironmentObject private var assignmentsStore: AssignmentsStore
 
     @Binding var currentScreen: ContentView.Screen
     @Binding var user: User
-    @Binding var classrooms: [GoogleClassroom]
-    @Binding var assignments: [Assignment]
-    @Binding var reminders: [Reminder]
 
+    @State private var classrooms: [GoogleClassroom] = []
     @State private var isWorking = false
     @State private var errorMessage: String?
 
@@ -40,34 +38,9 @@ struct ClassroomSelectionView: View {
                 List {
                     Section {
                         ForEach($classrooms) { $c in
-                            VStack(alignment: .leading, spacing: 8) {
-                                HStack {
-                                    Toggle(isOn: $c.isSelected) {
-                                        Text(c.name.isEmpty ? "Untitled" : c.name)
-                                            .font(.body)
-                                    }
-                                }
-                                
-                                if c.isSelected {
-                                    HStack {
-                                        Text("Class Type:")
-                                            .font(.caption)
-                                            .foregroundColor(.secondary)
-                                        
-                                        Picker("Class Type", selection: $c.classType) {
-                                            Text(ClassType.regular.displayName).tag(ClassType.regular)
-                                            Text(ClassType.club.displayName).tag(ClassType.club)
-                                        }
-                                        .pickerStyle(SegmentedPickerStyle())
-                                        .frame(maxWidth: 200)
-                                    }
-                                    .padding(.leading, 20)
-                                    
-                                    Text(c.classType.description)
-                                        .font(.caption2)
-                                        .foregroundColor(.secondary)
-                                        .padding(.leading, 20)
-                                }
+                            Toggle(isOn: $c.isSelected) {
+                                Text(c.name.isEmpty ? "Untitled" : c.name)
+                                    .font(.body)
                             }
                             .padding(.vertical, 4)
                         }
@@ -91,7 +64,6 @@ struct ClassroomSelectionView: View {
             .padding(.horizontal)
             .padding(.bottom, 8)
         }
-        .background(theme.bgColor.ignoresSafeArea())
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Button { Task { await loadClasses() } } label: { Image(systemName: "arrow.clockwise") }
@@ -106,7 +78,6 @@ struct ClassroomSelectionView: View {
             }
         }
         .onAppear {
-            // Skip classroom selection if user already has classrooms and is just redoing questionnaire
             if classroomsStore.hasChosenOnce && !classroomsStore.allClassrooms.isEmpty && classrooms.isEmpty {
                 classrooms = classroomsStore.applySelection(to: classroomsStore.allClassrooms)
             }
@@ -141,7 +112,18 @@ struct ClassroomSelectionView: View {
         isWorking = true; errorMessage = nil
         classroomsStore.allClassrooms = classrooms
         classroomsStore.rememberSelection(from: classrooms)
+        
+        // Fetch assignments for selected classes
+        do {
+            let token = user.googleToken.isEmpty ? try await auth.getFreshAccessToken(requiredScopes: classroomScopes).token : user.googleToken
+            let fetched = try await AssignmentSync.fetchForSelectedClasses(token: token, classes: classrooms)
+            assignmentsStore.replace(with: fetched)
+            assignmentsStore.load(for: user.googleEmail)
+        } catch {
+            errorMessage = "Could not load assignments: \(error.localizedDescription)"
+        }
+        
         isWorking = false
-        currentScreen = .schedule
+        currentScreen = .assignments
     }
 }

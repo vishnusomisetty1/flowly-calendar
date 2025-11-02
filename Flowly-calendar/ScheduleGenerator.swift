@@ -1,156 +1,284 @@
 import Foundation
 
 struct ScheduleGenerator {
-    static func generateWeek(user: User, assignments: [Assignment], from startDate: Date = Date()) -> [ScheduleItem] {
-        let cal = Calendar.current
-        let startOfDay = cal.startOfDay(for: startDate)
-
-        func dayWindow(on day: Date) -> (start: Date, end: Date) {
-            let studyStart = cal.date(
-                bySettingHour: cal.component(.hour, from: user.studyStartTime),
-                minute: cal.component(.minute, from: user.studyStartTime),
-                second: 0, of: day
-            ) ?? day
-            let sleep = cal.date(
-                bySettingHour: cal.component(.hour, from: user.sleepTime),
-                minute: cal.component(.minute, from: user.sleepTime),
-                second: 0, of: day
-            ) ?? day.addingTimeInterval(60*60*23)
-            return (max(studyStart, day), max(sleep, studyStart.addingTimeInterval(60*60)))
+    static let minimumTimeBlockMinutes = 15
+    
+    static func generateSchedule(
+        assignments: [Assignment],
+        startDate: Date,
+        days: Int = 30
+    ) -> [ScheduleItem] {
+        let calendar = Calendar.current
+        let endDate = calendar.date(byAdding: .day, value: days, to: startDate) ?? startDate
+        
+        // Filter to incomplete assignments with due dates within the period
+        let now = Date()
+        let eligibleAssignments = assignments.filter { assignment in
+            guard !assignment.isCompleted,
+                  assignment.hasRealDueDate,
+                  assignment.dueDate <= endDate,
+                  assignment.dueDate >= startDate else { return false }
+            return true
         }
-
-        var work = assignments.map { AIEstimator.annotate($0, user: user) }
-        work.sort {
-            if $0.dueDate != $1.dueDate { return $0.dueDate < $1.dueDate }
-            if $0.priority != $1.priority { return $0.priority < $1.priority }
-            return $0.estimatedMinutes > $1.estimatedMinutes
-        }
-
-        var items: [ScheduleItem] = []
-
-        // Dinner blocks
-        for i in 0..<7 {
-            let day = cal.date(byAdding: .day, value: i, to: startOfDay)!
-            let dinnerStart = cal.date(
-                bySettingHour: cal.component(.hour, from: user.dinnerTime),
-                minute: cal.component(.minute, from: user.dinnerTime),
-                second: 0, of: day
-            )!
-            let dinnerEnd = cal.date(byAdding: .minute, value: user.dinnerDuration, to: dinnerStart)!
-            items.append(ScheduleItem(title: "Dinner", startTime: dinnerStart, endTime: dinnerEnd, type: "meal"))
-        }
-
-        // Optional home activity (first day)
-        if !user.homeActivity.trimmingCharacters(in: .whitespaces).isEmpty {
-            let day0 = startOfDay
-            let start = cal.date(bySettingHour: 15, minute: 30, second: 0, of: day0) ?? day0.addingTimeInterval(60*60*15+60*30)
-            let end = cal.date(byAdding: .minute, value: 30, to: start)!
-            items.append(ScheduleItem(title: user.homeActivity, startTime: start, endTime: end, type: "break"))
-        }
-
-
-
-        // Fill study blocks
-        for i in 0..<7 {
-            let day = cal.date(byAdding: .day, value: i, to: startOfDay)!
-            let (winStart, winEnd) = dayWindow(on: day)
-            var cursor = winStart
-
-            let fixedToday = items.filter { cal.isDate($0.startTime, inSameDayAs: day) }
-            let fixedIntervals = fixedToday.map { ($0.startTime, $0.endTime) }.sorted { $0.0 < $1.0 }
-
-            func advancePastClashes() {
-                for (s, e) in fixedIntervals where cursor >= s && cursor < e { cursor = e }
-            }
-            advancePastClashes()
-            let dayEnd = winEnd
-
-            outer: while cursor < dayEnd {
-                guard let idx = work.firstIndex(where: { $0.estimatedMinutes > 0 }) else { break }
-                var a = work[idx]
-
-                // Adaptive scheduling based on study strategy
-                let chunk: Int
-                let breakLen: Int
-                var shouldAddBreak = true
-
-                switch user.studyStrategy {
-                case .pomodoro:
-                    // Pomodoro: 25 min work blocks with 5 min breaks
-                    chunk = 25
-                    breakLen = 5
-                    shouldAddBreak = true
-
-                case .activeRecall:
-                    // Active Recall: Shorter focused sessions with reflection breaks
-                    chunk = min(a.estimatedMinutes >= 60 ? 40 : 30, a.estimatedMinutes)
-                    breakLen = 10 // Longer breaks for reflection
-                    shouldAddBreak = true
-
-                case .spacedRepetition:
-                    // Spaced Repetition: Variable length based on review interval
-                    chunk = a.reviewInterval > 0 ? 20 : (a.estimatedMinutes >= 60 ? 50 : 40)
-                    breakLen = 7
-                    shouldAddBreak = true
-                }
-
-                var start = cursor
-                var end = min(cursor.addingTimeInterval(Double(chunk) * 60), dayEnd)
-
-                for (s, e) in fixedIntervals where start < e && end > s {
-                    start = e
-                    end = min(e.addingTimeInterval(Double(chunk) * 60), dayEnd)
-                }
-                if end <= start { break }
-
-                // Create schedule item with strategy-specific settings
-                var scheduleItem = ScheduleItem(
-                    title: user.studyStrategy == .pomodoro ? "🍅 Study: \(a.title)" : "Study: \(a.title)",
-                    startTime: start,
-                    endTime: end,
-                    type: "study",
-                    associatedAssignment: a
+        
+        guard !eligibleAssignments.isEmpty else { return [] }
+        
+        // Calculate priority score for each assignment
+        let assignmentsWithPriority = eligibleAssignments.map { assignment -> (Assignment, Double) in
+            let priority = calculatePriority(assignment: assignment, currentDate: now, endDate: endDate)
+            return (assignment, priority)
+        }.sorted { $0.1 > $1.1 } // Sort by priority (highest first)
+        
+        var scheduleItems: [ScheduleItem] = []
+        var dayWorkLoad: [Date: Int] = [:] // Track minutes scheduled per day
+        
+        // Distribute work across available days
+        for (assignment, _) in assignmentsWithPriority {
+            let totalDuration = assignment.durationMinutes ?? 45 // Default to 45 minutes if not set
+            let daysRemaining = calendar.dateComponents([.day], from: now, to: assignment.dueDate).day ?? 1
+            
+            // If total time is less than minimum block, schedule it all closer to due date
+            if totalDuration < minimumTimeBlockMinutes {
+                scheduleItemCloseToDueDate(
+                    assignment: assignment,
+                    totalDuration: totalDuration,
+                    daysRemaining: daysRemaining,
+                    currentDate: now,
+                    endDate: endDate,
+                    calendar: calendar,
+                    scheduleItems: &scheduleItems,
+                    dayWorkLoad: &dayWorkLoad
                 )
-
-                // Add strategy-specific metadata
-                if user.studyStrategy == .pomodoro {
-                    scheduleItem.studySessionNumber = items.filter { cal.isDate($0.startTime, inSameDayAs: day) && !$0.isBreakTime }.count + 1
-                }
-
-                items.append(scheduleItem)
-
-                let minutesPlaced = Int(end.timeIntervalSince(start) / 60)
-                a.estimatedMinutes = max(0, a.estimatedMinutes - minutesPlaced)
-                work[idx] = a
-
-                // Add break if needed
-                if shouldAddBreak {
-                    cursor = end
-                    advancePastClashes()
-
-                    // Add break item
-                    let breakEnd = min(cursor.addingTimeInterval(Double(breakLen) * 60), dayEnd)
-                    if breakEnd > cursor {
-                        items.append(ScheduleItem(
-                            title: breakLen >= 10 ? "☕ Break & Reflect" : "☕ Short Break",
-                            startTime: cursor,
-                            endTime: breakEnd,
-                            type: "break",
-                            isBreakTime: true
-                        ))
-                        cursor = breakEnd
-                    }
-                } else {
-                    cursor = end
-                }
-
-                advancePastClashes()
-
-                if work.allSatisfy({ $0.estimatedMinutes == 0 }) { break outer }
-                if cursor.addingTimeInterval(15*60) > dayEnd { break outer }
+            } else {
+                // Distribute evenly across available days
+                let blocks = distributeWorkEvenly(
+                    assignment: assignment,
+                    totalDuration: totalDuration,
+                    daysRemaining: max(daysRemaining, 1),
+                    startDate: startDate,
+                    endDate: min(endDate, assignment.dueDate),
+                    calendar: calendar,
+                    dayWorkLoad: &dayWorkLoad
+                )
+                scheduleItems.append(contentsOf: blocks)
             }
         }
-
-        return items.sorted { $0.startTime < $1.startTime }
+        
+        return scheduleItems.sorted { $0.startTime < $1.startTime }
+    }
+    
+    private static func calculatePriority(assignment: Assignment, currentDate: Date, endDate: Date) -> Double {
+        let calendar = Calendar.current
+        let daysRemaining = max(1, calendar.dateComponents([.day], from: currentDate, to: assignment.dueDate).day ?? 1)
+        
+        // Importance: based on points (higher points = more important)
+        // Default to medium importance if no points
+        let importance = Double(assignment.points ?? 50) / 100.0 // Normalize to 0-1 scale
+        
+        // Urgency: based on days remaining (fewer days = more urgent)
+        let totalDays = max(1, calendar.dateComponents([.day], from: currentDate, to: endDate).day ?? 30)
+        let urgency = 1.0 - (Double(daysRemaining) / Double(totalDays))
+        
+        // Combined priority: 60% importance, 40% urgency
+        let priority = (importance * 0.6) + (urgency * 0.4)
+        
+        return priority
+    }
+    
+    private static func distributeWorkEvenly(
+        assignment: Assignment,
+        totalDuration: Int,
+        daysRemaining: Int,
+        startDate: Date,
+        endDate: Date,
+        calendar: Calendar,
+        dayWorkLoad: inout [Date: Int]
+    ) -> [ScheduleItem] {
+        var items: [ScheduleItem] = []
+        
+        let now = Date()
+        let effectiveStartDate = max(startDate, now)
+        let effectiveEndDate = min(endDate, assignment.dueDate)
+        
+        // Calculate available days
+        guard let daysDiff = calendar.dateComponents([.day], from: effectiveStartDate, to: effectiveEndDate).day,
+              daysDiff > 0 else {
+            // If no days available, schedule all at once close to due date
+            scheduleSingleBlock(
+                assignment: assignment,
+                duration: totalDuration,
+                targetDate: assignment.dueDate,
+                calendar: calendar,
+                scheduleItems: &items,
+                dayWorkLoad: &dayWorkLoad
+            )
+            return items
+        }
+        
+        // Calculate how many blocks we need (minimum 15 minutes each)
+        let numBlocks = max(1, min(daysDiff, totalDuration / minimumTimeBlockMinutes))
+        let actualBlockSize = max(minimumTimeBlockMinutes, totalDuration / numBlocks)
+        let remainder = totalDuration - (actualBlockSize * numBlocks)
+        
+        // Distribute blocks evenly across available days
+        let dayInterval = max(1, daysDiff / numBlocks)
+        var scheduledBlocks = 0
+        var currentDay = effectiveStartDate
+        
+        while scheduledBlocks < numBlocks && currentDay <= effectiveEndDate {
+            let dayStart = calendar.startOfDay(for: currentDay)
+            
+            // Add remainder to last block
+            let blockDuration = (scheduledBlocks == numBlocks - 1) ? actualBlockSize + remainder : actualBlockSize
+            
+            // Try to find an available time slot
+            let preferredTimes = [9, 14, 19] // 9 AM, 2 PM, 7 PM
+            var scheduled = false
+            
+            for hour in preferredTimes {
+                var comps = calendar.dateComponents([.year, .month, .day], from: dayStart)
+                comps.hour = hour
+                comps.minute = 0
+                
+                if let timeSlot = calendar.date(from: comps), timeSlot >= now {
+                    let endTime = calendar.date(byAdding: .minute, value: blockDuration, to: timeSlot) ?? timeSlot
+                    
+                    items.append(ScheduleItem(
+                        assignmentId: assignment.id,
+                        startTime: timeSlot,
+                        endTime: endTime,
+                        title: assignment.title,
+                        durationMinutes: blockDuration
+                    ))
+                    
+                    dayWorkLoad[dayStart] = (dayWorkLoad[dayStart] ?? 0) + blockDuration
+                    scheduled = true
+                    scheduledBlocks += 1
+                    break
+                }
+            }
+            
+            // Move to next scheduled day
+            if scheduled, let nextDay = calendar.date(byAdding: .day, value: dayInterval, to: currentDay) {
+                currentDay = nextDay
+            } else if let nextDay = calendar.date(byAdding: .day, value: 1, to: currentDay) {
+                currentDay = nextDay
+            } else {
+                break
+            }
+        }
+        
+        // If we didn't schedule all blocks, schedule remainder close to due date
+        if scheduledBlocks < numBlocks {
+            let remainingDuration = totalDuration - items.reduce(0) { $0 + $1.durationMinutes }
+            if remainingDuration > 0 {
+                scheduleSingleBlock(
+                    assignment: assignment,
+                    duration: remainingDuration,
+                    targetDate: assignment.dueDate,
+                    calendar: calendar,
+                    scheduleItems: &items,
+                    dayWorkLoad: &dayWorkLoad
+                )
+            }
+        }
+        
+        return items
+    }
+    
+    private static func scheduleItemCloseToDueDate(
+        assignment: Assignment,
+        totalDuration: Int,
+        daysRemaining: Int,
+        currentDate: Date,
+        endDate: Date,
+        calendar: Calendar,
+        scheduleItems: inout [ScheduleItem],
+        dayWorkLoad: inout [Date: Int]
+    ) {
+        // Schedule within last 2 days before due date (or day before if only 1 day remains)
+        let daysBeforeDue = min(2, max(1, daysRemaining))
+        guard let targetDate = calendar.date(byAdding: .day, value: -daysBeforeDue, to: assignment.dueDate),
+              targetDate >= currentDate,
+              targetDate <= endDate else {
+            // If can't schedule before due date, schedule as early as possible
+            if let earliest = calendar.date(byAdding: .day, value: 1, to: currentDate),
+               earliest <= assignment.dueDate {
+                scheduleSingleBlock(
+                    assignment: assignment,
+                    duration: totalDuration,
+                    targetDate: earliest,
+                    calendar: calendar,
+                    scheduleItems: &scheduleItems,
+                    dayWorkLoad: &dayWorkLoad
+                )
+            }
+            return
+        }
+        
+        scheduleSingleBlock(
+            assignment: assignment,
+            duration: totalDuration,
+            targetDate: targetDate,
+            calendar: calendar,
+            scheduleItems: &scheduleItems,
+            dayWorkLoad: &dayWorkLoad
+        )
+    }
+    
+    private static func scheduleSingleBlock(
+        assignment: Assignment,
+        duration: Int,
+        targetDate: Date,
+        calendar: Calendar,
+        scheduleItems: inout [ScheduleItem],
+        dayWorkLoad: inout [Date: Int]
+    ) {
+        let dayStart = calendar.startOfDay(for: targetDate)
+        let existingWork = dayWorkLoad[dayStart] ?? 0
+        
+        // Try preferred times
+        let preferredTimes = [9, 14, 19]
+        
+        for hour in preferredTimes {
+            var comps = calendar.dateComponents([.year, .month, .day], from: dayStart)
+            comps.hour = hour
+            comps.minute = 0
+            
+            if let timeSlot = calendar.date(from: comps), timeSlot >= Date() {
+                let endTime = calendar.date(byAdding: .minute, value: duration, to: timeSlot) ?? timeSlot
+                
+                scheduleItems.append(ScheduleItem(
+                    assignmentId: assignment.id,
+                    startTime: timeSlot,
+                    endTime: endTime,
+                    title: assignment.title,
+                    durationMinutes: duration
+                ))
+                
+                dayWorkLoad[dayStart] = existingWork + duration
+                return
+            }
+        }
+        
+        // If preferred times don't work, use 2 PM as default
+        var comps = calendar.dateComponents([.year, .month, .day], from: dayStart)
+        comps.hour = 14
+        comps.minute = 0
+        
+        if let timeSlot = calendar.date(from: comps), timeSlot >= Date() {
+            let endTime = calendar.date(byAdding: .minute, value: duration, to: timeSlot) ?? timeSlot
+            
+            scheduleItems.append(ScheduleItem(
+                assignmentId: assignment.id,
+                startTime: timeSlot,
+                endTime: endTime,
+                title: assignment.title,
+                durationMinutes: duration
+            ))
+            
+            dayWorkLoad[dayStart] = existingWork + duration
+        }
     }
 }
+

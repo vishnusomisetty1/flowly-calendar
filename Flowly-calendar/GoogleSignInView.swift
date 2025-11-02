@@ -2,7 +2,6 @@ import SwiftUI
 
 struct GoogleSignInView: View {
     @EnvironmentObject private var auth: AuthManager
-    @EnvironmentObject private var userStore: UserStore
 
     @Binding var currentScreen: ContentView.Screen
     @Binding var user: User
@@ -39,7 +38,7 @@ struct GoogleSignInView: View {
                 .padding(.top, 4)
             }
 
-            Text("Approve access to your classes and coursework so we can build your schedule.")
+            Text("Approve access to your classes and coursework.")
                 .font(.caption).foregroundColor(.gray).multilineTextAlignment(.center)
         }
         .padding()
@@ -71,16 +70,8 @@ struct GoogleSignInView: View {
     }
 
     private func handlePostSignIn(newEmail: String, token: String) {
-        let isSwitch = !user.googleEmail.isEmpty && user.googleEmail != newEmail
         user.googleEmail = newEmail
         user.googleToken = token
-        userStore.user = user
-
-        if isSwitch {
-            userStore.onboardingDone = false
-            currentScreen = .questionnaire
-        } else {
-            currentScreen = .classroomSelection
-        }
+        currentScreen = .classroomSelection
     }
 }
