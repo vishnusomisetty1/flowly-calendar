@@ -1,0 +1,64 @@
+import SwiftUI
+
+struct AssignmentRow: View {
+    let assignment: Assignment
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(assignment.title)
+                .font(.body)
+                .fontWeight(.medium)
+
+            HStack(spacing: 16) {
+                Label(formattedDate(assignment.dueDate), systemImage: "calendar")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+
+                if assignment.aiEstimatedTime > 0 {
+                    Label("Estimated: \(formattedMinutes(assignment.aiEstimatedTime))", systemImage: "clock")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+
+                if assignment.aiEstimatedImportance > 0 {
+                    Label("Importance: \(assignment.aiEstimatedImportance)", systemImage: "star.fill")
+                        .font(.caption)
+                        .foregroundColor(.yellow)
+                }
+            }
+        }
+        .padding(.vertical, 4)
+    }
+
+    private func formattedDate(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.dateStyle = .medium
+        formatter.timeStyle = .short
+        return formatter.string(from: date)
+    }
+
+    private func formattedMinutes(_ minutes: Int) -> String {
+        let h = minutes / 60
+        let m = minutes % 60
+        if h > 0 { return "\(h)h \(m)m" }
+        return "\(m)m"
+    }
+}
+
+#Preview {
+    let sample = Assignment(
+        id: UUID(),
+        title: "Sample Assignment",
+        dueDate: Date(),
+        classroom: "Math",
+        description: "Read chapter 5",
+        courseId: nil,
+        isCompleted: false,
+        hasRealDueDate: true,
+        aiEstimatedImportance: 3,
+        aiEstimatedTime: 45
+    )
+    return AssignmentRow(assignment: sample)
+        .padding()
+        .previewLayout(.sizeThatFits)
+}
