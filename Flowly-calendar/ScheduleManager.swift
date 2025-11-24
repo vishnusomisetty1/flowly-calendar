@@ -1,0 +1,56 @@
+import Foundation
+import SwiftUI
+import Combine
+
+/// Holds assignments and settings, regenerates the schedule automatically when settings/assignments change.
+class ScheduleManager: ObservableObject {
+    @Published var plannedDays: [PlannedDay] = []
+    
+    private var assignments: [AssignmentInput]
+    private var settings: ScheduleSettings
+    private var cancellables = Set<AnyCancellable>()
+
+    init(assignments: [AssignmentInput], settings: ScheduleSettings) {
+        self.assignments = assignments
+        self.settings = settings
+        // Observe key settings
+        observeSettings()
+        regenerateSchedule()
+    }
+
+    func updateAssignments(_ newAssignments: [AssignmentInput]) {
+        assignments = newAssignments
+        regenerateSchedule()
+    }
+
+    private func observeSettings() {
+        // Observe all relevant settings
+        settings.objectWillChange.sink { [weak self] _ in
+            self?.regenerateSchedule()
+        }.store(in: &cancellables)
+    }
+
+    private func regenerateSchedule() {
+        guard let start = settings.preferredStartTime,
+              let end = settings.preferredEndTime else {
+            plannedDays = []
+            return
+        }
+        let calendar = Calendar.current
+        let startComps = calendar.dateComponents([.hour, .minute], from: start)
+        let endComps = calendar.dateComponents([.hour, .minute], from: end)
+        // Use .frontLoadingFactor as frontLoadFactorMax
+        let schedule = ScheduleGenerator.generateSchedule(
+            assignments: assignments,
+            preferredStartTime: startComps,
+            preferredEndTime: endComps,
+            maxOverflowHoursPerDay: settings.maxOverflowHoursPerDay,
+            planningHorizonDays: 14, // You can make this a setting
+            frozenWindowDays: 1,
+            frontLoadFactorMax: settings.frontLoadingFactor
+        )
+        DispatchQueue.main.async {
+            self.plannedDays = schedule
+        }
+    }
+}
