@@ -103,6 +103,9 @@ struct ScheduleView: View {
                 importance: Double(a.aiEstimatedImportance)
             )
         }
+        if inputs.isEmpty {
+            print("DEBUG: No assignments available for scheduling.")
+        }
         let calendar = Calendar.current
         let today = calendar.startOfDay(for: Date())
         let latestDue = inputs.map { $0.dueDate }.max()
