@@ -14,24 +14,20 @@ class ScheduleSettings: ObservableObject {
     @AppStorage("urgencyWeighting") var urgencyWeighting: Double = 0.5
     @AppStorage("showOverflowHours") var showOverflowHours: Bool = true
 
-    @Published var preferredStartTime: Date {
-        didSet {
-            preferredStartTimeInterval = preferredStartTime.timeIntervalSince1970
-        }
-    }
-    @Published var preferredEndTime: Date {
-        didSet {
-            preferredEndTimeInterval = preferredEndTime.timeIntervalSince1970
-        }
-    }
+    // Use optional Dates and initialize them after self is fully initialized
+    @Published var preferredStartTime: Date?
+    @Published var preferredEndTime: Date?
 
     init() {
+        // Set to nil initially to avoid using self before fully initialized
+        preferredStartTime = nil
+        preferredEndTime = nil
         preferredStartTime = Date(timeIntervalSince1970: preferredStartTimeInterval)
         preferredEndTime = Date(timeIntervalSince1970: preferredEndTimeInterval)
     }
 }
 
-struct ScheduleSettingsView: View {
+struct DetailedScheduleSettingsView: View {
     @ObservedObject var settings: ScheduleSettings
     @Environment(\.dismiss) private var dismiss
 
@@ -45,8 +41,9 @@ struct ScheduleSettingsView: View {
 
     init(settings: ScheduleSettings) {
         self.settings = settings
-        _tempPreferredStartTime = State(initialValue: settings.preferredStartTime)
-        _tempPreferredEndTime = State(initialValue: settings.preferredEndTime)
+        // Provide default fallback values for optionals to avoid unexpected nils
+        _tempPreferredStartTime = State(initialValue: settings.preferredStartTime ?? Date())
+        _tempPreferredEndTime = State(initialValue: settings.preferredEndTime ?? Date())
         _tempMaxOverflowHoursPerDay = State(initialValue: settings.maxOverflowHoursPerDay)
         _tempFrontLoadingFactor = State(initialValue: settings.frontLoadingFactor)
         _tempUrgencyWeighting = State(initialValue: settings.urgencyWeighting)
@@ -66,7 +63,7 @@ struct ScheduleSettingsView: View {
                     }
                     VStack(alignment: .leading) {
                         Text("Front-loading Factor: \(tempFrontLoadingFactor, specifier: "%.2f")")
-                        Slider(value: $tempFrontLoadingFactor, in: 0...1)
+                        Slider(value: $tempFrontLoadingFactor, in: 0...2)
                     }
                     VStack(alignment: .leading) {
                         Text("Urgency Weighting: \(tempUrgencyWeighting, specifier: "%.2f")")
@@ -103,3 +100,4 @@ struct ScheduleSettingsView: View {
         settings.showOverflowHours = tempShowOverflowHours
     }
 }
+

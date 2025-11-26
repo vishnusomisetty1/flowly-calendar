@@ -1,3 +1,4 @@
+// TODO: Minimum time block setting not found; please specify where the time block duration is handled.
 import SwiftUI
 
 struct MonthView: View {
@@ -209,18 +210,7 @@ struct DayAssignmentsView: View {
                         .padding()
                 } else {
                     ForEach(assignmentsForDay) { assignment in
-                        AssignmentRow(
-                            assignment: assignment,
-                            onToggleComplete: {
-                                assignmentsStore.toggleCompletion(for: assignment.id)
-                            },
-                            onUpdateDuration: { minutes in
-                                assignmentsStore.updateDuration(for: assignment.id, minutes: minutes)
-                            },
-                            onUpdatePoints: { points in
-                                assignmentsStore.updatePoints(for: assignment.id, points: points)
-                            }
-                        )
+                        AssignmentRow(assignment: assignment)
                     }
                 }
             }

@@ -3,6 +3,7 @@ import GoogleSignIn
 
 @main
 struct FlowlyCalendarApp: App {
+    @AppStorage("isDarkMode") private var isDarkMode: Bool = false
     @StateObject private var auth = AuthManager.shared
     @StateObject private var classroomsStore = ClassroomsStore()
     @StateObject private var assignmentsStore = AssignmentsStore()
@@ -21,6 +22,7 @@ struct FlowlyCalendarApp: App {
                     .onOpenURL { url in GIDSignIn.sharedInstance.handle(url) }
                     .task { auth.restorePreviousSignIn() }
             }
+            .colorScheme(isDarkMode ? .dark : .light)
         }
     }
 }

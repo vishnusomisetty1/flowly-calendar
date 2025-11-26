@@ -1,206 +1,177 @@
 import SwiftUI
+import Foundation
 
 struct ScheduleView: View {
-    @EnvironmentObject private var assignmentsStore: AssignmentsStore
-    
-    @State private var startDate = Date()
-    @State private var daysPeriod = 30
-    @State private var showSettings = false
-    
-    private var endDate: Date {
-        Calendar.current.date(byAdding: .day, value: daysPeriod, to: startDate) ?? startDate
+    @EnvironmentObject var assignmentsStore: AssignmentsStore
+    @State var plannedDays: [PlannedDay] = []
+
+    // User preferences for preferred window
+    @State var preferredStartTime = DateComponents(hour: 15, minute: 0)
+    @State var preferredEndTime = DateComponents(hour: 18, minute: 0)
+    @State var maxOverflowHoursPerDay = 2.0
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                ForEach(
+                    plannedDays.filter { day in
+                        return day.assignmentBlocks.contains { block in
+                            (block.preferredHours > 0 || block.overflowHours > 0) &&
+                            block.endTime > block.startTime &&
+                            block.endTime.timeIntervalSince(block.startTime) >= 60
+                        }
+                    },
+                    id: \.date
+                ) { day in
+                    VStack(alignment: .leading) {
+                        Text(day.date, style: .date)
+                            .font(.headline)
+                        ForEach(day.assignmentBlocks.filter { block in
+                            (block.preferredHours > 0 || block.overflowHours > 0) &&
+                            block.endTime > block.startTime &&
+                            block.endTime.timeIntervalSince(block.startTime) >= 60
+                        }, id: \.id) { block in
+                            HStack {
+                                VStack(alignment: .leading) {
+                                    Text(block.assignmentId)
+                                        .fontWeight(.semibold)
+                                    if let label = ScheduleView.atRiskOrDeferrableLabel(
+                                        plannedDays: plannedDays,
+                                        day: day,
+                                        block: block
+                                    ) {
+                                        label
+                                            .padding(4)
+                                            .background(label.backgroundColor)
+                                            .foregroundColor(.white)
+                                            .cornerRadius(4)
+                                            .font(.caption)
+                                            .padding(.top, 2)
+                                    }
+                                    if let urgency = day.urgencies[block.assignmentId] {
+                                        Text(String(format: "Urgency: %.2f", urgency))
+                                            .font(.caption)
+                                            .foregroundColor(.purple)
+                                    }
+                                    let durationMinutes = Int((block.endTime.timeIntervalSince(block.startTime) / 60).rounded())
+                                    if block.preferredHours > 0 {
+                                        Text("Preferred: \(durationMinutes) min")
+                                    } else if block.overflowHours > 0 {
+                                        Text("Overflow: \(durationMinutes) min")
+                                    }
+                                    Text("\(block.startTime.formatted(date: .omitted, time: .shortened)) - \(block.endTime.formatted(date: .omitted, time: .shortened))")
+                                    if let reason = block.overflowReason {
+                                        Text(reason)
+                                            .font(.caption2)
+                                            .foregroundColor(.red)
+                                    }
+                                }
+                                Spacer()
+                                if block.overflowHours > 0 {
+                                    Image(systemName: "exclamationmark.triangle.fill")
+                                        .foregroundColor(.orange)
+                                }
+                            }
+                            .padding(8)
+                            .background(Color.green.opacity(block.preferredHours > 0 ? 0.3 : 0))
+                            .cornerRadius(6)
+                        }
+                    }
+                    Divider()
+                }
+            }
+            .padding()
+        }
+        .onAppear {
+            generateSchedule()
+        }
+        .onChange(of: assignmentsStore.assignments) { _ in
+            generateSchedule()
+        }
     }
-    
-    private var scheduleItems: [ScheduleItem] {
-        ScheduleGenerator.generateSchedule(
-            assignments: assignmentsStore.assignments,
-            startDate: startDate,
-            days: daysPeriod
+
+    func generateSchedule() {
+        // Only include incomplete assignments with real due dates and remaining work
+        let inputs = assignmentsStore.assignments.filter { !$0.isCompleted && $0.hasRealDueDate }.compactMap { a -> AssignmentInput? in
+            let remainingMinutes = max(0, a.aiEstimatedTime - a.minutesCompleted)
+            guard remainingMinutes > 0 else { return nil } // skip assignments with no remaining work
+            return AssignmentInput(
+                id: a.title,
+                dueDate: a.dueDate,
+                totalHours: Double(remainingMinutes) / 60.0, // convert remaining minutes to hours
+                hoursCompleted: 0, // start fresh with remaining
+                importance: Double(a.aiEstimatedImportance)
+            )
+        }
+        let calendar = Calendar.current
+        let today = calendar.startOfDay(for: Date())
+        let latestDue = inputs.map { $0.dueDate }.max()
+        let planningHorizonDays: Int
+        if let latest = latestDue {
+            let days = max(1, calendar.dateComponents([.day], from: today, to: calendar.startOfDay(for: latest)).day ?? 0) + 1
+            planningHorizonDays = days
+        } else {
+            planningHorizonDays = 1
+        }
+        plannedDays = ScheduleGenerator.generateSchedule(
+            assignments: inputs,
+            preferredStartTime: preferredStartTime,
+            preferredEndTime: preferredEndTime,
+            maxOverflowHoursPerDay: maxOverflowHoursPerDay,
+            planningHorizonDays: planningHorizonDays,
+            currentTime: Date()  // pass current time for today
         )
     }
-    
-    var body: some View {
-        NavigationView {
-            VStack(spacing: 0) {
-                // Period selector
-                HStack {
-                    Button(action: { showSettings.toggle() }) {
-                        HStack {
-                            Image(systemName: "calendar")
-                            Text("\(formatDate(startDate)) - \(formatDate(endDate))")
-                                .font(.subheadline)
-                        }
-                    }
-                    .foregroundColor(.blue)
-                    
-                    Spacer()
-                    
-                    Button(action: previousPeriod) {
-                        Image(systemName: "chevron.left")
-                            .foregroundColor(.blue)
-                    }
-                    
-                    Button(action: nextPeriod) {
-                        Image(systemName: "chevron.right")
-                            .foregroundColor(.blue)
-                    }
-                }
-                .padding()
-                
-                // Schedule list
-                if scheduleItems.isEmpty {
-                    VStack(spacing: 16) {
-                        Image(systemName: "calendar.badge.exclamationmark")
-                            .font(.system(size: 48))
-                            .foregroundColor(.gray)
-                        Text("No assignments to schedule")
-                            .font(.headline)
-                            .foregroundColor(.secondary)
-                        Text("Make sure you have incomplete assignments with due dates and durations set.")
-                            .font(.caption)
-                            .foregroundColor(.gray)
-                            .multilineTextAlignment(.center)
-                            .padding(.horizontal)
-                    }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                } else {
-                    List {
-                        ForEach(groupedScheduleItems.keys.sorted(), id: \.self) { date in
-                            Section {
-                                ForEach(groupedScheduleItems[date] ?? []) { item in
-                                    ScheduleItemRow(item: item)
-                                }
-                            } header: {
-                                Text(formatSectionDate(date))
-                            }
-                        }
-                    }
-                }
-            }
-            .navigationTitle("Schedule")
-            .sheet(isPresented: $showSettings) {
-                ScheduleSettingsView(
-                    startDate: $startDate,
-                    daysPeriod: $daysPeriod
-                )
+}
+
+fileprivate extension ScheduleView {
+    struct RiskLabel: View {
+        let text: String
+        let backgroundColor: Color
+
+        var body: some View {
+            Text(text)
+                .padding(4)
+                .background(backgroundColor)
+                .foregroundColor(.white)
+                .cornerRadius(4)
+                .font(.caption)
+        }
+    }
+
+    static func atRiskOrDeferrableLabel(plannedDays: [PlannedDay], day: PlannedDay, block: DailyAssignmentBlock) -> RiskLabel? {
+        // Show label only if block has preferred or overflow hours
+        guard (block.preferredHours > 0 || block.overflowHours > 0) else { return nil }
+
+        let assignmentId: String = block.assignmentId
+
+        // Sum remaining work
+        var remainingWork: Double = 0.0
+        for pd in plannedDays where pd.date >= day.date {
+            for b in pd.assignmentBlocks where b.assignmentId == assignmentId {
+                remainingWork += b.preferredHours + b.overflowHours
             }
         }
-    }
-    
-    private var groupedScheduleItems: [Date: [ScheduleItem]] {
-        let calendar = Calendar.current
-        var grouped: [Date: [ScheduleItem]] = [:]
-        
-        for item in scheduleItems {
-            let day = calendar.startOfDay(for: item.startTime)
-            if grouped[day] == nil {
-                grouped[day] = []
+
+        // Sum future preferred capacity
+        var futurePreferredCapacity: Double = 0.0
+        for pd in plannedDays where pd.date >= day.date && pd.date <= day.date { // Use day.date for dueDate placeholder
+            for b in pd.assignmentBlocks where b.assignmentId == assignmentId {
+                futurePreferredCapacity += b.preferredHours
             }
-            grouped[day]?.append(item)
         }
-        
-        return grouped
-    }
-    
-    private func previousPeriod() {
-        if let newDate = Calendar.current.date(byAdding: .day, value: -daysPeriod, to: startDate) {
-            startDate = newDate
+
+        if remainingWork > futurePreferredCapacity {
+            return RiskLabel(text: "At-Risk", backgroundColor: .orange)
+        } else {
+            return RiskLabel(text: "Deferrable", backgroundColor: .blue)
         }
-    }
-    
-    private func nextPeriod() {
-        if let newDate = Calendar.current.date(byAdding: .day, value: daysPeriod, to: startDate) {
-            startDate = newDate
-        }
-    }
-    
-    private func formatDate(_ date: Date) -> String {
-        let formatter = DateFormatter()
-        formatter.dateStyle = .medium
-        formatter.timeStyle = .none
-        return formatter.string(from: date)
-    }
-    
-    private func formatSectionDate(_ date: Date) -> String {
-        let formatter = DateFormatter()
-        formatter.dateFormat = "EEEE, MMMM d"
-        return formatter.string(from: date)
     }
 }
 
-struct ScheduleItemRow: View {
-    let item: ScheduleItem
-    
-    var body: some View {
-        HStack(alignment: .top, spacing: 12) {
-            // Time
-            VStack(alignment: .leading, spacing: 2) {
-                Text(formatTime(item.startTime))
-                    .font(.headline)
-                Text(formatTime(item.endTime))
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-            }
-            .frame(width: 70, alignment: .leading)
-            
-            Divider()
-            
-            // Assignment info
-            VStack(alignment: .leading, spacing: 4) {
-                Text(item.title)
-                    .font(.body)
-                    .fontWeight(.medium)
-                
-                HStack {
-                    Image(systemName: "clock")
-                        .font(.caption)
-                        .foregroundColor(.blue)
-                    Text("\(item.durationMinutes) min")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                }
-            }
-            
-            Spacer()
-        }
-        .padding(.vertical, 4)
-    }
-    
-    private func formatTime(_ date: Date) -> String {
-        let formatter = DateFormatter()
-        formatter.timeStyle = .short
-        return formatter.string(from: date)
-    }
+#if DEBUG
+#Preview {
+    ScheduleView()
+        .environmentObject(AssignmentsStore())
 }
-
-struct ScheduleSettingsView: View {
-    @Binding var startDate: Date
-    @Binding var daysPeriod: Int
-    @Environment(\.dismiss) var dismiss
-    
-    var body: some View {
-        NavigationView {
-            Form {
-                Section {
-                    DatePicker("Start Date", selection: $startDate, displayedComponents: .date)
-                    
-                    Stepper("Days: \(daysPeriod)", value: $daysPeriod, in: 7...90, step: 7)
-                } header: {
-                    Text("Schedule Period")
-                } footer: {
-                    Text("Adjust the start date and number of days to schedule assignments.")
-                }
-            }
-            .navigationTitle("Schedule Settings")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }
-                }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Done") { dismiss() }
-                }
-            }
-        }
-    }
-}
+#endif
