@@ -31,24 +31,20 @@ class ScheduleManager: ObservableObject {
     }
 
     private func regenerateSchedule() {
-        guard let start = settings.preferredStartTime,
-              let end = settings.preferredEndTime else {
-            plannedDays = []
-            return
-        }
         let calendar = Calendar.current
-        let startComps = calendar.dateComponents([.hour, .minute], from: start)
-        let endComps = calendar.dateComponents([.hour, .minute], from: end)
+        let startComps = calendar.dateComponents([.hour, .minute], from: settings.preferredStartTime)
+        let endComps = calendar.dateComponents([.hour, .minute], from: settings.preferredEndTime)
+        // Save updated preferred start and end times to internal settings
+        settings.preferredStartTime = calendar.date(from: startComps) ?? settings.preferredStartTime
+        settings.preferredEndTime = calendar.date(from: endComps) ?? settings.preferredEndTime
         // Use .frontLoadingFactor as frontLoadFactorMax
         let schedule = ScheduleGenerator.generateSchedule(
             assignments: assignments,
             preferredStartTime: startComps,
-            preferredEndTime: endComps,
-            maxOverflowHoursPerDay: settings.maxOverflowHoursPerDay,
-            planningHorizonDays: 14, // You can make this a setting
-            frozenWindowDays: 1,
-            frontLoadFactorMax: settings.frontLoadingFactor
+            preferredEndTime: endComps
         )
+        // Debug print front-load factor for each assignment
+        
         DispatchQueue.main.async {
             self.plannedDays = schedule
         }

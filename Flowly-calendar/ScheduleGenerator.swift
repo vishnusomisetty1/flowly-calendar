@@ -57,7 +57,6 @@ public struct ScheduleGenerator {
 
     /// Rewritten generator that:
     /// - Plans up to the latest due date among assignments (or to planningHorizonDays if larger)
-    /// - Preserves frozen days (minimal unfreeze only when infeasible)
     /// - Uses the urgency formula described in docs
     /// - Does not mutate input assignments; uses an allocation map
     ///
@@ -65,17 +64,13 @@ public struct ScheduleGenerator {
     ///   - assignments: list of assignments
     ///   - preferredStartTime: DateComponents hour/min for preferred window
     ///   - preferredEndTime: DateComponents hour/min
-    ///   - maxOverflowHoursPerDay: overflow hours available per day
     ///   - planningHorizonDays: minimum horizon (will extend to latest due date if needed)
-    ///   - frozenWindowDays: number of days (starting today) to keep stable unless impossible (default 1)
     ///   - frontLoadFactorMax: maximum gentle front-load factor (e.g., 1.15). Must be >= 1.0
     public static func generateSchedule(
         assignments: [AssignmentInput],
         preferredStartTime: DateComponents,
         preferredEndTime: DateComponents,
-        maxOverflowHoursPerDay: Double,
-        planningHorizonDays: Int,
-        frozenWindowDays: Int = 1, // ignored, kept for API compatibility
+        planningHorizonDays: Int? = nil,
         frontLoadFactorMax: Double = 2.0,
         currentTime: Date? = nil
     ) -> [PlannedDay] {
@@ -97,8 +92,13 @@ public struct ScheduleGenerator {
 
         // Determine planning horizon
         let lastDueDate = assignments.map { calendar.startOfDay(for: $0.dueDate) }.max() ?? today
-        guard let minHorizonEndDate = calendar.date(byAdding: .day, value: max(0, planningHorizonDays - 1), to: today) else { return [] }
-        let horizonEndDate = max(minHorizonEndDate, lastDueDate)
+        let horizonEndDate: Date
+        if let minDays = planningHorizonDays, minDays > 0 {
+            let minHorizonEndDate = calendar.date(byAdding: .day, value: minDays - 1, to: today) ?? today
+            horizonEndDate = max(minHorizonEndDate, lastDueDate)
+        } else {
+            horizonEndDate = lastDueDate
+        }
 
         // Build planningDates skipping weekends
         var planningDates: [Date] = []
@@ -121,7 +121,7 @@ public struct ScheduleGenerator {
 
         // capacity per day
         var capacityPerDay: [Date: (preferred: Double, overflow: Double)] = [:]
-        for date in planningDates { capacityPerDay[dayKey(date)] = (preferred: preferredHoursPerDay, overflow: maxOverflowHoursPerDay) }
+        for date in planningDates { capacityPerDay[dayKey(date)] = (preferred: preferredHoursPerDay, overflow: Double.greatestFiniteMagnitude) }
 
         // assignment avail dates
         var assignmentAvailableDates: [String: [Date]] = [:]
@@ -276,13 +276,23 @@ public struct ScheduleGenerator {
                 return max(0.0, rem - futurePrefCap) == 0
             }.map { $0.assignment }
 
+            // Helper: Dynamic front-load factor (clamped 1-3)
+            func dynamicFrontLoadFactor(for assignment: AssignmentInput, remaining: Double, urgency: Double) -> Double {
+                // Base factor 1.0, add urgency contribution, and add logarithmic scaling for large tasks
+                let factor = 1.0 + (urgency * 1.0) + log2(remaining + 1.0)/5.0
+                return min(max(1.0, factor), 3.0) // clamp between 1 and 3
+            }
+
             func frontLoadList(_ list: [AssignmentInput]) {
                 for a in list {
                     if remainingPreferred <= 0 { break }
                     let rem = remainingPerAssignment[a.id] ?? 0
                     if rem <= 0 { continue }
                     let base = rem / Double(max(1, assignmentAvailableDates[a.id]?.count ?? 1))
-                    let maxFront = max(0, base * (frontLoadFactorMax - 1.0))
+                    let dynamicFactor = dynamicFrontLoadFactor(for: a, remaining: rem, urgency: urgencies[a.id] ?? 0)
+                    // Debug print for dynamic front-load factor and remaining hours
+                    print("DEBUG: Front-load factor for assignment \(a.id) = \(dynamicFactor), remaining hours: \(rem)")
+                    let maxFront = max(0, base * (dynamicFactor - 1.0))
                     let toFront = min(maxFront, remainingPreferred, rem)
                     if toFront > 0 {
                         var existing = allocations[key]?[a.id] ?? (preferred: 0.0, overflow: 0.0, reason: nil)
@@ -294,6 +304,9 @@ public struct ScheduleGenerator {
                         todayAlloc[a.id] = (todayAlloc[a.id] ?? 0.0) + toFront
                     }
                 }
+                // Debug print for cumulative front-load allocated today
+                let totalFrontLoadToday = todayAlloc.values.reduce(0, +)
+                print("DEBUG: Total front-load allocated for day \(key) = \(totalFrontLoadToday) hours")
             }
 
             frontLoadList(atRisk)
@@ -328,20 +341,21 @@ public struct ScheduleGenerator {
                 let aid = info.assignment.id
                 let rem = remainingPerAssignment[aid] ?? 0
                 if rem <= 0 { continue }
-                // compute total preferred capacity remaining up to due date
-                let totalPrefCap = info.assignment.id // placeholder to clarify scope
-                // allocate minimal overflow today (spread) proportional to days left shortage
                 let futureDates = assignmentAvailableDates[aid] ?? []
                 let daysLeft = max(1, futureDates.count)
                 // compute total preferred capacity from today (including today current allocations)
                 var totalPrefAvail = 0.0
                 for d in futureDates {
-                    let k = dayKey(d); let dayCaps = capacityPerDay[k]!; let usedPref = allocations[k]?.reduce(0.0, { $0 + $1.value.preferred }) ?? 0.0; totalPrefAvail += max(0.0, dayCaps.preferred - usedPref)
+                    let k = dayKey(d)
+                    let dayCaps = capacityPerDay[k]!
+                    let usedPref = allocations[k]?.reduce(0.0, { $0 + $1.value.preferred }) ?? 0.0
+                    totalPrefAvail += max(0.0, dayCaps.preferred - usedPref)
                 }
                 let totalShortage = max(0.0, rem - totalPrefAvail)
                 if totalShortage <= 0 { continue }
-                let minOverflowToday = min(rem, totalShortage / Double(daysLeft))
-                let allocOverflow = min(minOverflowToday, overflowLeft, rem)
+                // Dynamic overflow allocation
+                let dynamicOverflowToday = min(rem, (rem / Double(daysLeft)) * 1.2)
+                let allocOverflow = dynamicOverflowToday
                 if allocOverflow > 0 {
                     var existing = allocations[key]?[aid] ?? (preferred: 0.0, overflow: 0.0, reason: nil)
                     existing.overflow += allocOverflow
@@ -372,8 +386,14 @@ public struct ScheduleGenerator {
             var current = origPrefStart
             if calendar.isDateInToday(date) {
                 let nowForToday = currentTime ?? Date()
-                if nowForToday > current { current = nowForToday }
+                // If current time is after prefEnd, reset to prefStart for allocation
+                if nowForToday >= prefEnd {
+                    current = origPrefStart
+                } else if nowForToday > current {
+                    current = nowForToday
+                }
             }
+            print("DEBUG: Generating day \(key), prefStart: \(origPrefStart), prefEnd: \(prefEnd), current: \(current)")
 
             // preferred
             var cumulative: [String: Double] = [:]
@@ -383,12 +403,16 @@ public struct ScheduleGenerator {
                 let already = cumulative[aid] ?? 0
                 let remainingForAssign = max(0.0, a.totalHours - a.hoursCompleted - already)
                 let used = min(alloc.preferred, remainingForAssign)
-                if used <= 0 { continue }
+                if used <= 0 {
+                    print("DEBUG: Skipping block for assignment \(aid), used <= 0")
+                    continue
+                }
                 let maxSec = max(0.0, prefEnd.timeIntervalSince(current))
                 if maxSec <= 0 { break }
                 // Exact block duration in seconds, no extra buffer
                 let durSec = used * 3600.0
                 guard let end = calendar.date(byAdding: .second, value: Int(durSec.rounded()), to: current) else { continue }
+                print("DEBUG: Adding block for assignment \(aid), start: \(current), end: \(end), preferred: \(alloc.preferred), overflow: \(alloc.overflow)")
                 blocks.append(DailyAssignmentBlock(
                     assignmentId: aid,
                     startTime: current,
@@ -419,10 +443,14 @@ public struct ScheduleGenerator {
                 let already = cumulativeOverflow[aid] ?? 0
                 let remainingForAssign = max(0.0, a.totalHours - a.hoursCompleted - already)
                 let used = min(overflowHoursRaw, remainingForAssign)
-                if used <= 0 { continue }
+                if used <= 0 {
+                    print("DEBUG: Skipping block for assignment \(aid), used <= 0")
+                    continue
+                }
                 // Exact block duration in seconds, no extra buffer
                 let durSec = used * 3600.0
                 guard let end = calendar.date(byAdding: .second, value: Int(durSec.rounded()), to: current) else { continue }
+                print("DEBUG: Adding block for assignment \(aid), start: \(current), end: \(end), preferred: \(alloc.preferred), overflow: \(alloc.overflow)")
                 blocks.append(
                     DailyAssignmentBlock(
                         assignmentId: aid,

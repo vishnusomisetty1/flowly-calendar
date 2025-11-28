@@ -1,3 +1,23 @@
+// Reminder: Ensure that ScheduleSettings is created and injected as an environmentObject in your main App struct, e.g.:
+//
+// @main
+// struct YourApp: App {
+//     @StateObject private var auth = AuthManager()
+//     @StateObject private var classroomsStore = ClassroomsStore()
+//     @StateObject private var assignmentsStore = AssignmentsStore()
+//     @StateObject private var scheduleSettings = ScheduleSettings()
+//
+//     var body: some Scene {
+//         WindowGroup {
+//             ContentView()
+//                 .environmentObject(auth)
+//                 .environmentObject(classroomsStore)
+//                 .environmentObject(assignmentsStore)
+//                 .environmentObject(scheduleSettings)
+//         }
+//     }
+// }
+
 import SwiftUI
 import FoundationModels
 
@@ -162,6 +182,8 @@ struct ContentView: View {
 
     enum Screen { case welcome, googleSignIn, classroomSelection, assignments }
 
+    @StateObject private var scheduleSettings = ScheduleSettings()
+
     var body: some View {
         Group {
             if !auth.didAttemptRestore {
@@ -189,6 +211,7 @@ struct ContentView: View {
 
                     case .assignments:
                         MainTabView(currentScreen: $currentScreen)
+                            .environmentObject(scheduleSettings)
                     }
                 }
             }
@@ -234,6 +257,8 @@ struct MainTabView: View {
     @EnvironmentObject private var auth: AuthManager
     @Binding var currentScreen: ContentView.Screen
 
+    @EnvironmentObject private var scheduleSettings: ScheduleSettings
+
     var body: some View {
         TabView {
             AssignmentsView(currentScreen: $currentScreen)
@@ -243,6 +268,7 @@ struct MainTabView: View {
 
             if #available(iOS 26.0, *) {
                 ScheduleView()
+                    .environmentObject(scheduleSettings)
                     .tabItem {
                         Label("Schedule", systemImage: "calendar")
                     }
