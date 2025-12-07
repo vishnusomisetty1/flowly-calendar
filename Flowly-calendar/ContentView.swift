@@ -1126,15 +1126,19 @@ struct AssignmentEditSheet: View {
     @EnvironmentObject var assignmentsStore: AssignmentsStore
     @Environment(\.dismiss) var dismiss
     let assignment: Assignment
+
+    @State private var newTitle: String
+    @State private var newDescription: String
     @State private var newTime: Int
     @State private var newImportance: Int
     @State private var newDueDate: Date
 
     init(assignment: Assignment) {
         self.assignment = assignment
+        _newTitle = State(initialValue: assignment.title)
+        _newDescription = State(initialValue: assignment.description ?? "")
         _newTime = State(initialValue: assignment.aiEstimatedTime)
         _newImportance = State(initialValue: assignment.aiEstimatedImportance)
-        // Use current due date or now for editing
         _newDueDate = State(initialValue: assignment.hasRealDueDate ? assignment.dueDate : Date())
     }
 
@@ -1142,49 +1146,33 @@ struct AssignmentEditSheet: View {
         NavigationView {
             ScrollView {
                 VStack(alignment: .leading, spacing: 28) {
+
                     // Title Section
                     VStack(alignment: .leading, spacing: 8) {
-                        Text("Title")
-                            .font(.headline)
-                        TextField("Title", text: Binding(
-                            get: { assignment.title },
-                            set: { newValue in
-                                if let idx = assignmentsStore.assignments.firstIndex(where: { $0.id == assignment.id }) {
-                                    assignmentsStore.assignments[idx].title = newValue
-                                }
-                            }
-                        ))
-                        .textFieldStyle(.roundedBorder)
-                        .background(Color(.secondarySystemBackground))
-                        .cornerRadius(8)
+                        Text("Title").font(.headline)
+                        TextField("Title", text: $newTitle)
+                            .textFieldStyle(.roundedBorder)
+                            .background(Color(.secondarySystemBackground))
+                            .cornerRadius(8)
                     }
 
                     // Description Section
                     VStack(alignment: .leading, spacing: 8) {
-                        Text("Description")
-                            .font(.headline)
-                        TextEditor(text: Binding(
-                            get: { assignment.description ?? "" },
-                            set: { newValue in
-                                if let idx = assignmentsStore.assignments.firstIndex(where: { $0.id == assignment.id }) {
-                                    assignmentsStore.assignments[idx].description = newValue
-                                }
-                            }
-                        ))
-                        .frame(minHeight: 120)
-                        .padding(6)
-                        .background(Color(.secondarySystemBackground))
-                        .cornerRadius(8)
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 8)
-                                .stroke(Color.gray.opacity(0.18), lineWidth: 1)
-                        )
+                        Text("Description").font(.headline)
+                        TextEditor(text: $newDescription)
+                            .frame(minHeight: 120)
+                            .padding(6)
+                            .background(Color(.secondarySystemBackground))
+                            .cornerRadius(8)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 8)
+                                    .stroke(Color.gray.opacity(0.18), lineWidth: 1)
+                            )
                     }
 
                     // Due Date Section
                     VStack(alignment: .leading, spacing: 8) {
-                        Text("Due Date")
-                            .font(.headline)
+                        Text("Due Date").font(.headline)
                         if assignment.hasRealDueDate {
                             DatePicker("Due Date", selection: $newDueDate, displayedComponents: [.date, .hourAndMinute])
                                 .labelsHidden()
@@ -1202,8 +1190,7 @@ struct AssignmentEditSheet: View {
 
                     // Estimated Time Section
                     VStack(alignment: .leading, spacing: 8) {
-                        Text("Estimated Time (minutes)")
-                            .font(.headline)
+                        Text("Estimated Time (minutes)").font(.headline)
                         TextField("Time (1-1440)", value: $newTime, format: .number)
                             .keyboardType(.numberPad)
                             .padding(8)
@@ -1217,8 +1204,7 @@ struct AssignmentEditSheet: View {
 
                     // Importance Section
                     VStack(alignment: .leading, spacing: 8) {
-                        Text("Importance (1-5)")
-                            .font(.headline)
+                        Text("Importance (1-5)").font(.headline)
                         TextField("Importance (1-5)", value: $newImportance, format: .number)
                             .keyboardType(.numberPad)
                             .padding(8)
@@ -1243,17 +1229,16 @@ struct AssignmentEditSheet: View {
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Save") {
-                        let clampedTime = min(max(newTime, 1), 1440)
-                        let clampedImportance = min(max(newImportance, 1), 5)
                         if let idx = assignmentsStore.assignments.firstIndex(where: { $0.id == assignment.id }) {
-                            assignmentsStore.assignments[idx].aiEstimatedTime = clampedTime
-                            assignmentsStore.assignments[idx].aiEstimatedImportance = clampedImportance
+                            assignmentsStore.assignments[idx].title = newTitle
+                            assignmentsStore.assignments[idx].description = newDescription
+                            assignmentsStore.assignments[idx].aiEstimatedTime = min(max(newTime, 1), 1440)
+                            assignmentsStore.assignments[idx].aiEstimatedImportance = min(max(newImportance, 1), 5)
                             if assignment.hasRealDueDate {
                                 assignmentsStore.assignments[idx].dueDate = newDueDate
                             }
-                            // For assignments with no real due date, do not allow changing due date or toggling
-                            dismiss()
                         }
+                        dismiss()
                     }
                 }
             }
