@@ -2,35 +2,70 @@ import SwiftUI
 
 struct AssignmentRow: View {
     let assignment: Assignment
+    
+    @EnvironmentObject private var assignmentsStore: AssignmentsStore
+    @State private var showDeleteAlert = false
+    @State private var finalDeleteVerification = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(assignment.title)
-                .font(.body)
-                .fontWeight(.medium)
+        HStack {
+            VStack(alignment: .leading, spacing: 6) {
+                Text(assignment.title)
+                    .font(.body)
+                    .fontWeight(.medium)
 
-            HStack(spacing: 16) {
-                Label(formattedDate(assignment.dueDate), systemImage: "calendar")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-
-                if assignment.aiEstimatedTime > 0 {
-                    Label("Estimated: \(formattedMinutes(assignment.aiEstimatedTime))", systemImage: "clock")
+                HStack(spacing: 16) {
+                    Label(formattedDate(assignment.dueDate, hasRealDueDate: assignment.hasRealDueDate), systemImage: "calendar")
                         .font(.caption)
                         .foregroundColor(.secondary)
-                }
 
-                if assignment.aiEstimatedImportance > 0 {
-                    Label("Importance: \(assignment.aiEstimatedImportance)", systemImage: "star.fill")
-                        .font(.caption)
-                        .foregroundColor(.yellow)
+                    if assignment.aiEstimatedTime > 0 {
+                        Label("Estimated: \(formattedMinutes(assignment.aiEstimatedTime))", systemImage: "clock")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+
+                    if assignment.aiEstimatedImportance > 0 {
+                        Label("Importance: \(assignment.aiEstimatedImportance)", systemImage: "star.fill")
+                            .font(.caption)
+                            .foregroundColor(.yellow)
+                    }
                 }
             }
+            Spacer()
+            Button {
+                showDeleteAlert = true
+            } label: {
+                Image(systemName: "trash")
+                    .foregroundColor(.red)
+            }
+            .buttonStyle(BorderlessButtonStyle())
         }
         .padding(.vertical, 4)
+        .alert("Delete Assignment?", isPresented: $showDeleteAlert, actions: {
+            Button("Delete", role: .destructive) {
+                finalDeleteVerification = true
+                showDeleteAlert = false
+            }
+            Button("Cancel", role: .cancel) { }
+        }, message: {
+            Text("Are you sure you want to delete this assignment?")
+        })
+        .alert("Are you sure you want to permanently delete this assignment? This action cannot be undone.", isPresented: $finalDeleteVerification, actions: {
+            Button("Delete", role: .destructive) {
+                assignmentsStore.assignments.removeAll { $0.id == assignment.id }
+                finalDeleteVerification = false
+            }
+            Button("Cancel", role: .cancel) {
+                finalDeleteVerification = false
+            }
+        })
     }
 
-    private func formattedDate(_ date: Date) -> String {
+    private func formattedDate(_ date: Date, hasRealDueDate: Bool) -> String {
+        if !hasRealDueDate {
+            return "No Due Date"
+        }
         let formatter = DateFormatter()
         formatter.dateStyle = .medium
         formatter.timeStyle = .short

@@ -1,23 +1,22 @@
 import Foundation
 
-// Reusing your existing models (no changes)
 public struct AssignmentInput {
     public let id: String
     public let dueDate: Date
     public let totalHours: Double
-    public var hoursCompleted: Double
+    public let hoursCompleted: Double
     public let importance: Double
-
-    public init(id: String, dueDate: Date, totalHours: Double, hoursCompleted: Double = 0, importance: Double = 1.0) {
+    public init(id: String, dueDate: Date, totalHours: Double, hoursCompleted: Double, importance: Double) {
         self.id = id
         self.dueDate = dueDate
         self.totalHours = totalHours
         self.hoursCompleted = hoursCompleted
-        self.importance = importance >= 1 ? importance : 1.0
+        self.importance = importance
     }
 }
 
 public struct DailyAssignmentBlock: Identifiable {
+    public let id = UUID()
     public let assignmentId: String
     public let startTime: Date
     public let endTime: Date
@@ -25,10 +24,7 @@ public struct DailyAssignmentBlock: Identifiable {
     public let overflowHours: Double
     public let bufferLeft: Double
     public let overflowReason: String?
-
-    public var id: String { "\(assignmentId)-\(startTime.timeIntervalSince1970)" }
-
-    public init(assignmentId: String, startTime: Date, endTime: Date, preferredHours: Double, overflowHours: Double, bufferLeft: Double, overflowReason: String? = nil) {
+    public init(assignmentId: String, startTime: Date, endTime: Date, preferredHours: Double, overflowHours: Double, bufferLeft: Double, overflowReason: String?) {
         self.assignmentId = assignmentId
         self.startTime = startTime
         self.endTime = endTime
@@ -44,7 +40,6 @@ public struct PlannedDay {
     public let assignmentBlocks: [DailyAssignmentBlock]
     public let urgencies: [String: Double]
     public let allOnTrack: Bool
-
     public init(date: Date, assignmentBlocks: [DailyAssignmentBlock], urgencies: [String: Double], allOnTrack: Bool) {
         self.date = date
         self.assignmentBlocks = assignmentBlocks
@@ -53,442 +48,323 @@ public struct PlannedDay {
     }
 }
 
+// Helper: a single window to allocate into
+fileprivate struct AllocationWindow {
+    enum WindowType { case preferred, overflow, early }
+    let assignment: AssignmentInput
+    let date: Date // day start
+    let type: WindowType
+    let start: Date
+    let end: Date
+    var durationSeconds: TimeInterval { max(0, end.timeIntervalSince(start)) }
+}
+
+// Core allocator: builds candidate windows for each assignment across the planning horizon then allocates hours.
+fileprivate func allocateAssignmentsAcrossHorizon(assignments: [AssignmentInput], startDate: Date, endDate: Date, loadBias: Double, preferredStartTime: DateComponents, preferredEndTime: DateComponents, currentTime: Date = Date()) -> [(assignment: AssignmentInput, start: Date, end: Date, overflow: Bool)] {
+    print("[DEBUG] Starting horizon allocation. assignments=\(assignments.count), loadBias=\(loadBias)")
+    var allocations: [(assignment: AssignmentInput, start: Date, end: Date, overflow: Bool)] = []
+    let calendar = Calendar.current
+
+    // Build planning days (inclusive)
+    var dayCursor = calendar.startOfDay(for: startDate)
+    let horizonEndDay = calendar.startOfDay(for: endDate)
+    var planningDays: [Date] = []
+    while dayCursor <= horizonEndDay {
+        planningDays.append(dayCursor)
+        guard let next = calendar.date(byAdding: .day, value: 1, to: dayCursor) else { break }
+        dayCursor = next
+    }
+
+    // For each assignment, collect windows (preferred, overflow, early) up to its dueDate and respecting currentTime
+    var windowsByAssignment: [String: [AllocationWindow]] = [:]
+    var remainingSecondsByAssignment: [String: TimeInterval] = [:]
+
+    for assignment in assignments {
+        print("[DEBUG] Processing assignment: \(assignment.id), remainingHours=\(max(0, assignment.totalHours - assignment.hoursCompleted))")
+        let remainingHours = max(0, assignment.totalHours - assignment.hoursCompleted)
+        let remainingSeconds = remainingHours * 3600.0
+        remainingSecondsByAssignment[assignment.id] = remainingSeconds
+
+        var windows: [AllocationWindow] = []
+        for day in planningDays {
+            // don't include days after assignment due date
+            if day > calendar.startOfDay(for: assignment.dueDate) { break }
+
+            // day local boundaries
+            let dayStart = calendar.startOfDay(for: day)
+            let dayEnd = calendar.date(byAdding: .day, value: 1, to: dayStart)!.addingTimeInterval(-1)
+
+            // preferred window for this day
+            let prefStartHour = preferredStartTime.hour ?? 17
+            let prefStartMin = preferredStartTime.minute ?? 0
+            let prefEndHour = preferredEndTime.hour ?? 18
+            let prefEndMin = preferredEndTime.minute ?? 0
+
+            let prefStart = calendar.date(bySettingHour: prefStartHour, minute: prefStartMin, second: 0, of: dayStart) ?? dayStart
+            let prefEnd = calendar.date(bySettingHour: prefEndHour, minute: prefEndMin, second: 0, of: dayStart) ?? dayStart
+
+            // early: dayStart .. prefStart
+            // overflow: prefEnd .. dayEnd
+            // truncate any window on the assignment due day to assignment.dueDate
+            let isDueDay = calendar.isDate(assignment.dueDate, inSameDayAs: day)
+            let dueCutoff = assignment.dueDate
+
+            // preferred
+            var pStart = prefStart
+            var pEnd = prefEnd
+            if isDueDay {
+                if pEnd > dueCutoff { pEnd = dueCutoff }
+            }
+            if pEnd > pStart {
+                // respect current time for today's windows
+                pStart = max(pStart, currentTime)
+                if pEnd > pStart {
+                    windows.append(AllocationWindow(assignment: assignment, date: dayStart, type: .preferred, start: pStart, end: pEnd))
+                }
+            }
+
+            // overflow
+            var oStart = prefEnd
+            var oEnd = dayEnd
+            if isDueDay {
+                if oEnd > dueCutoff { oEnd = dueCutoff }
+            }
+            if oEnd > oStart {
+                oStart = max(oStart, currentTime)
+                if oEnd > oStart {
+                    windows.append(AllocationWindow(assignment: assignment, date: dayStart, type: .overflow, start: oStart, end: oEnd))
+                }
+            }
+
+            // early
+            var eStart = dayStart
+            var eEnd = prefStart
+            if isDueDay {
+                if eEnd > dueCutoff { eEnd = dueCutoff }
+            }
+            if eEnd > eStart {
+                eStart = max(eStart, currentTime)
+                if eEnd > eStart {
+                    windows.append(AllocationWindow(assignment: assignment, date: dayStart, type: .early, start: eStart, end: eEnd))
+                }
+            }
+        }
+        windowsByAssignment[assignment.id] = windows
+    }
+
+    // Dictionary tracking occupied intervals per day to avoid overlapping allocations
+    var occupiedIntervalsByDay: [Date: [(start: Date, end: Date)]] = [:]
+
+    // Helper function to find non-overlapping free intervals within a proposed interval for a given day
+    func freeIntervals(in intervalStart: Date, to intervalEnd: Date, occupied: [(start: Date, end: Date)]) -> [(start: Date, end: Date)] {
+        var free: [(start: Date, end: Date)] = []
+        var currentStart = intervalStart
+
+        // occupied intervals should be sorted by start
+        let sortedOccupied = occupied.sorted { $0.start < $1.start }
+
+        for occ in sortedOccupied {
+            if occ.end <= currentStart {
+                // This occupied interval ends before currentStart, no overlap
+                continue
+            }
+            if occ.start >= intervalEnd {
+                // This occupied is after the interval, no more overlaps
+                break
+            }
+            if occ.start > currentStart {
+                // free interval before this occupied interval
+                free.append((start: currentStart, end: min(occ.start, intervalEnd)))
+            }
+            // move currentStart past this occupied interval
+            currentStart = max(currentStart, occ.end)
+            if currentStart >= intervalEnd {
+                break
+            }
+        }
+        // any free interval after last occupied interval
+        if currentStart < intervalEnd {
+            free.append((start: currentStart, end: intervalEnd))
+        }
+        return free
+    }
+
+    // Allocation strategy:
+    // Strictly allocate by type in order (preferred → overflow → early) fully filling each before moving on.
+    for assignment in assignments {
+        guard var remaining = remainingSecondsByAssignment[assignment.id], remaining > 0 else { continue }
+        let windows = windowsByAssignment[assignment.id] ?? []
+
+        // partition windows by type and sort by date ascending
+        let prefWindows = windows.filter { $0.type == .preferred }.sorted { $0.date < $1.date }
+        let overflowWindows = windows.filter { $0.type == .overflow }.sorted { $0.date < $1.date }
+        let earlyWindows = windows.filter { $0.type == .early }.sorted { $0.date < $1.date }
+
+        // 1) Preferred - fill fully before moving on
+        for win in prefWindows {
+            guard remaining > 0 else { break }
+            let windowSeconds = win.durationSeconds
+            if windowSeconds <= 0 { continue }
+            let day = win.date
+            let occupied = occupiedIntervalsByDay[day] ?? []
+
+            // Find free intervals within this window that do not overlap with existing allocations
+            let freeIntervalsInWindow = freeIntervals(in: win.start, to: win.end, occupied: occupied)
+
+            // Allocate into free intervals up to remaining need
+            for freeInterval in freeIntervalsInWindow {
+                guard remaining > 0 else { break }
+                let freeDuration = freeInterval.end.timeIntervalSince(freeInterval.start)
+                if freeDuration <= 0 { continue }
+                let allocSeconds = min(remaining, freeDuration)
+                let allocStart = freeInterval.start
+                let allocEnd = allocStart.addingTimeInterval(allocSeconds)
+                allocations.append((assignment, allocStart, allocEnd, false))
+                print("[DEBUG] Allocated preferred (non-overlapping): id=\(assignment.id) start=\(allocStart) end=\(allocEnd)")
+                remaining -= allocSeconds
+
+                // Record this allocation to occupied intervals for the day
+                occupiedIntervalsByDay[day, default: []].append((start: allocStart, end: allocEnd))
+            }
+        }
+
+        // 2) Overflow - only if remaining > 0
+        for win in overflowWindows {
+            guard remaining > 0 else { break }
+            let windowSeconds = win.durationSeconds
+            if windowSeconds <= 0 { continue }
+            let day = win.date
+            let occupied = occupiedIntervalsByDay[day] ?? []
+
+            // Find free intervals within this window that do not overlap with existing allocations
+            let freeIntervalsInWindow = freeIntervals(in: win.start, to: win.end, occupied: occupied)
+
+            // Allocate into free intervals up to remaining need
+            for freeInterval in freeIntervalsInWindow {
+                guard remaining > 0 else { break }
+                let freeDuration = freeInterval.end.timeIntervalSince(freeInterval.start)
+                if freeDuration <= 0 { continue }
+                let allocSeconds = min(remaining, freeDuration)
+                let allocStart = freeInterval.start
+                let allocEnd = allocStart.addingTimeInterval(allocSeconds)
+                allocations.append((assignment, allocStart, allocEnd, true))
+                print("[DEBUG] Allocated overflow (non-overlapping): id=\(assignment.id) start=\(allocStart) end=\(allocEnd)")
+                remaining -= allocSeconds
+
+                // Record this allocation to occupied intervals for the day
+                occupiedIntervalsByDay[day, default: []].append((start: allocStart, end: allocEnd))
+            }
+        }
+
+        // 3) Early - only if remaining > 0
+        for win in earlyWindows {
+            guard remaining > 0 else { break }
+            let windowSeconds = win.durationSeconds
+            if windowSeconds <= 0 { continue }
+            let day = win.date
+            let occupied = occupiedIntervalsByDay[day] ?? []
+
+            // Find free intervals within this window that do not overlap with existing allocations
+            let freeIntervalsInWindow = freeIntervals(in: win.start, to: win.end, occupied: occupied)
+
+            // Allocate into free intervals up to remaining need
+            for freeInterval in freeIntervalsInWindow {
+                guard remaining > 0 else { break }
+                let freeDuration = freeInterval.end.timeIntervalSince(freeInterval.start)
+                if freeDuration <= 0 { continue }
+                let allocSeconds = min(remaining, freeDuration)
+                let allocStart = freeInterval.start
+                let allocEnd = allocStart.addingTimeInterval(allocSeconds)
+                allocations.append((assignment, allocStart, allocEnd, true))
+                print("[DEBUG] Allocated early (non-overlapping): id=\(assignment.id) start=\(allocStart) end=\(allocEnd)")
+                remaining -= allocSeconds
+
+                // Record this allocation to occupied intervals for the day
+                occupiedIntervalsByDay[day, default: []].append((start: allocStart, end: allocEnd))
+            }
+        }
+
+        remainingSecondsByAssignment[assignment.id] = remaining
+    }
+
+    return allocations
+}
+
 public struct ScheduleGenerator {
 
-    /// Rewritten generator that:
-    /// - Plans up to the latest due date among assignments (or to planningHorizonDays if larger)
-    /// - Uses the urgency formula described in docs
-    /// - Does not mutate input assignments; uses an allocation map
-    ///
-    /// - Parameters:
-    ///   - assignments: list of assignments
-    ///   - preferredStartTime: DateComponents hour/min for preferred window
-    ///   - preferredEndTime: DateComponents hour/min
-    ///   - planningHorizonDays: minimum horizon (will extend to latest due date if needed)
-    ///   - frontLoadFactorMax: maximum gentle front-load factor (e.g., 1.15). Must be >= 1.0
     public static func generateSchedule(
         assignments: [AssignmentInput],
         preferredStartTime: DateComponents,
         preferredEndTime: DateComponents,
         planningHorizonDays: Int? = nil,
-        frontLoadFactorMax: Double = 2.0,
+        loadBias: Double,
         currentTime: Date? = nil
     ) -> [PlannedDay] {
+        let sortedAssignments = assignments.sorted { $0.dueDate < $1.dueDate }
+        print("[DEBUG] generateSchedule called. assignments=\(sortedAssignments.count), horizonDays=\(planningHorizonDays ?? -1)")
         let calendar = Calendar.current
         let now = currentTime ?? Date()
         let today = calendar.startOfDay(for: now)
 
-        // Validate preferred start/end and compute preferred hours per day.
-        guard
-            let prefStart = calendar.date(bySettingHour: preferredStartTime.hour ?? 9, minute: preferredStartTime.minute ?? 0, second: 0, of: today),
-            let prefEnd = calendar.date(bySettingHour: preferredEndTime.hour ?? 17, minute: preferredEndTime.minute ?? 0, second: 0, of: today)
-        else {
-            print("Warning: Invalid preferred start/end components. Returning empty schedule.")
-            return []
-        }
-        let preferredHoursPerDay = max(0.0, prefEnd.timeIntervalSince(prefStart) / 3600.0)
+        guard !sortedAssignments.isEmpty else { return [] }
 
-        guard !assignments.isEmpty else { return [] }
-
-        // Determine planning horizon
-        let lastDueDate = assignments.map { calendar.startOfDay(for: $0.dueDate) }.max() ?? today
+        // compute horizon end date (inclusive)
+        let lastDueDate = sortedAssignments.map { $0.dueDate }.max() ?? today
         let horizonEndDate: Date
-        if let minDays = planningHorizonDays, minDays > 0 {
-            let minHorizonEndDate = calendar.date(byAdding: .day, value: minDays - 1, to: today) ?? today
-            horizonEndDate = max(minHorizonEndDate, lastDueDate)
+        if let days = planningHorizonDays, days > 0 {
+            let minHorizon = calendar.date(byAdding: .day, value: days - 1, to: today) ?? today
+            horizonEndDate = max(minHorizon, calendar.startOfDay(for: lastDueDate))
         } else {
-            horizonEndDate = lastDueDate
+            horizonEndDate = calendar.startOfDay(for: lastDueDate)
         }
 
-        // Build planningDates skipping weekends
-        var planningDates: [Date] = []
-        var dateCursor = today
-        while dateCursor <= horizonEndDate {
-            if !calendar.isDateInWeekend(dateCursor) {
-                planningDates.append(dateCursor)
-            }
-            guard let nextDate = calendar.date(byAdding: .day, value: 1, to: dateCursor) else { return [] }
-            dateCursor = nextDate
+        // Generate allocations
+        let rawAllocations = allocateAssignmentsAcrossHorizon(
+            assignments: sortedAssignments,
+            startDate: today,
+            endDate: horizonEndDate,
+            loadBias: loadBias,
+            preferredStartTime: preferredStartTime,
+            preferredEndTime: preferredEndTime,
+            currentTime: now
+        )
+
+        // Group allocations by day into DailyAssignmentBlock
+        var blocksByDay: [Date: [DailyAssignmentBlock]] = [:]
+        for (assignment, start, end, overflow) in rawAllocations {
+            let blockDate = calendar.startOfDay(for: start)
+            let durationHours = max(0.0, end.timeIntervalSince(start) / 3600.0)
+            let preferredH = overflow ? 0.0 : durationHours
+            let overflowH = overflow ? durationHours : 0.0
+            let block = DailyAssignmentBlock(assignmentId: assignment.id, startTime: start, endTime: end, preferredHours: preferredH, overflowHours: overflowH, bufferLeft: 0, overflowReason: overflow ? "Allocated in overflow/early" : nil)
+            blocksByDay[blockDate, default: []].append(block)
         }
 
-        // Helpers
-        func dayKey(_ d: Date) -> Date { calendar.startOfDay(for: d) }
-        func planningDaysBetween(start: Date, end: Date) -> [Date] {
-            let s = dayKey(start)
-            let e = dayKey(end)
-            return planningDates.filter { $0 >= s && $0 <= e }
+        // Build planning dates list
+        var dates: [Date] = []
+        var d = today
+        while d <= horizonEndDate {
+            dates.append(d)
+            guard let n = calendar.date(byAdding: .day, value: 1, to: d) else { break }
+            d = n
         }
 
-        // capacity per day
-        var capacityPerDay: [Date: (preferred: Double, overflow: Double)] = [:]
-        for date in planningDates { capacityPerDay[dayKey(date)] = (preferred: preferredHoursPerDay, overflow: Double.greatestFiniteMagnitude) }
-
-        // assignment avail dates
-        var assignmentAvailableDates: [String: [Date]] = [:]
-        for assignment in assignments {
-            assignmentAvailableDates[assignment.id] = planningDaysBetween(start: today, end: assignment.dueDate)
+        // Build PlannedDay array keeping same shape as before
+        var planned: [PlannedDay] = []
+        for date in dates {
+            let blocks = blocksByDay[date] ?? []
+            let urgencies = sortedAssignments.reduce(into: [String: Double]()) { acc, a in
+                let remainingHours = max(0.0, a.totalHours - a.hoursCompleted)
+                let hoursUntilDue = max(1.0, a.dueDate.timeIntervalSince(date) / 3600.0) // avoid division by zero
+                let urgency = remainingHours / hoursUntilDue
+                acc[a.id] = urgency
+            }
+            let onTrack = true
+            planned.append(PlannedDay(date: date, assignmentBlocks: blocks, urgencies: urgencies, allOnTrack: onTrack))
         }
+        print("[DEBUG] Planned days generated: \(planned.count)")
 
-        // allocations map
-        var allocations: [Date: [String: (preferred: Double, overflow: Double, reason: String?)]] = [:]
-        for date in planningDates { allocations[dayKey(date)] = [:] }
-
-        // NEW: live remaining tracker (pre-seeded with historical progress)
-        var remainingPerAssignment: [String: Double] = [:]
-        for a in assignments {
-            remainingPerAssignment[a.id] = max(0.0, a.totalHours - a.hoursCompleted)
-        }
-
-        // Reusable urgency using current remaining estimate
-        func urgencyLive(for assignment: AssignmentInput, remaining: Double, on date: Date) -> Double {
-            guard remaining > 0 else { return 0 }
-            let datesLeft = assignmentAvailableDates[assignment.id] ?? []
-            let daysLeftArray = datesLeft.filter { $0 >= dayKey(date) }
-            let daysLeft = max(1, daysLeftArray.count)
-            let invDays = 1.0 / Double(daysLeft)
-            let preferredH = max(0.5, preferredHoursPerDay)
-            let workIntensity = remaining / (Double(daysLeft) * preferredH)
-            let importanceNormalized = min(max(assignment.importance, 1.0), 5.0) / 5.0
-            return 0.6 * invDays + 0.3 * workIntensity + 0.1 * importanceNormalized
-        }
-
-        // MAIN allocation with live remainingPerAssignment updates
-        for date in planningDates {
-            let key = dayKey(date)
-            var caps = capacityPerDay[key]!
-
-            // Active assignments (still have remaining and due not passed)
-            var active = assignments.filter { date <= $0.dueDate && (remainingPerAssignment[$0.id] ?? 0) > 0 }
-
-            // compute urgencies with live remaining
-            var urgencies: [String: Double] = [:]
-            for a in active {
-                urgencies[a.id] = urgencyLive(for: a, remaining: remainingPerAssignment[a.id] ?? 0, on: date)
-            }
-
-            // sort by due then urgency
-            active.sort {
-                if $0.dueDate != $1.dueDate { return $0.dueDate < $1.dueDate }
-                return (urgencies[$0.id] ?? 0) > (urgencies[$1.id] ?? 0)
-            }
-
-            // precompute info per assignment using live remaining
-            struct Info { let assignment: AssignmentInput; var remaining: Double; let daysLeft: Int }
-            var infos: [Info] = []
-            for a in active {
-                let avail = assignmentAvailableDates[a.id]?.filter { $0 >= key } ?? []
-                let daysLeft = max(1, avail.count)
-                let rem = remainingPerAssignment[a.id] ?? 0
-                if rem > 0 { infos.append(Info(assignment: a, remaining: rem, daysLeft: daysLeft)) }
-            }
-
-            // Pass 1: allocate non-deferrable amount (minNeededToday) in preferred hours
-            var remainingPreferred = caps.preferred
-            // keep per-day tentative allocations for bookkeeping
-            var todayAlloc: [String: Double] = [:]
-
-            for (idx, var info) in infos.enumerated() {
-                if remainingPreferred <= 0 { break }
-                let a = info.assignment
-                let rem = max(0.0, info.remaining)
-                if rem <= 0 { continue }
-
-                // compute future preferred capacity (excluding today)
-                let futureDates = assignmentAvailableDates[a.id]?.filter { $0 > key } ?? []
-                var futurePrefCap = 0.0
-                for d in futureDates {
-                    let k = dayKey(d)
-                    let dayCaps = capacityPerDay[k]!
-                    let usedPref = allocations[k]?.reduce(0.0, { $0 + $1.value.preferred }) ?? 0.0
-                    futurePrefCap += max(0.0, dayCaps.preferred - usedPref)
-                }
-
-                let minNeededToday = max(0.0, rem - futurePrefCap)
-                var allocPref = min(minNeededToday, remainingPreferred, rem)
-
-                // If we couldn't satisfy minNeededToday, try to push later-deadline tentative allocations
-                if allocPref < minNeededToday && minNeededToday > 0 && remainingPreferred > 0 {
-                    // attempt to free tentative allocations from later infos
-                    let later = infos.enumerated().filter { $0.offset > idx && $0.element.assignment.dueDate > a.dueDate }
-                    for (_, l) in later {
-                        let lid = l.assignment.id
-                        let tent = todayAlloc[lid] ?? 0.0
-                        if tent > 0 {
-                            // check if deferrable
-                            let lFutureDates = assignmentAvailableDates[lid]?.filter { $0 > key } ?? []
-                            var lFuturePrefCap = 0.0
-                            for d in lFutureDates {
-                                let k = dayKey(d); let dayCaps = capacityPerDay[k]!
-                                let usedPref = allocations[k]?.reduce(0.0, { $0 + $1.value.preferred }) ?? 0.0
-                                lFuturePrefCap += max(0.0, dayCaps.preferred - usedPref)
-                            }
-                            let lRem = max(0.0, l.remaining - tent)
-                            if lRem <= lFuturePrefCap {
-                                // free it
-                                todayAlloc[lid] = 0
-                                remainingPreferred += tent
-                                let need = minNeededToday - allocPref
-                                let give = min(need, tent)
-                                allocPref += give
-                                remainingPreferred -= give
-                                // reduce earlier tentative from allocations map
-                                if var ex = allocations[key]?[lid] {
-                                    ex.preferred = max(0.0, ex.preferred - tent)
-                                    if ex.preferred == 0 && ex.overflow == 0 { allocations[key]?[lid] = nil }
-                                    else { allocations[key]?[lid] = ex }
-                                }
-                                if allocPref >= minNeededToday { break }
-                            }
-                        }
-                    }
-                }
-
-                allocPref = min(allocPref, remainingPreferred, rem)
-                if allocPref > 0 {
-                    var existing = allocations[key]?[a.id] ?? (preferred: 0.0, overflow: 0.0, reason: nil)
-                    existing.preferred += allocPref
-                    existing.reason = (existing.reason == nil) ? "Preferred allocation" : (existing.reason! + "; Preferred allocation")
-                    allocations[key]?[a.id] = existing
-
-                    // record tentative and decrement live remaining
-                    todayAlloc[a.id] = (todayAlloc[a.id] ?? 0.0) + allocPref
-                    remainingPerAssignment[a.id] = max(0.0, (remainingPerAssignment[a.id] ?? 0) - allocPref)
-                    remainingPreferred -= allocPref
-                }
-            }
-
-            // Pass 2: front-load (at-risk then deferable) using updated remainingPerAssignment
-            let atRisk = infos.filter { info in
-                let rem = remainingPerAssignment[info.assignment.id] ?? 0
-                if rem <= 0 { return false }
-                let futureDates = assignmentAvailableDates[info.assignment.id]?.filter { $0 > key } ?? []
-                var futurePrefCap = 0.0
-                for d in futureDates { let k = dayKey(d); let dayCaps = capacityPerDay[k]!; let usedPref = allocations[k]?.reduce(0.0, { $0 + $1.value.preferred }) ?? 0.0; futurePrefCap += max(0.0, dayCaps.preferred - usedPref) }
-                return max(0.0, rem - futurePrefCap) > 0
-            }.map { $0.assignment }
-
-            let deferable = infos.filter { info in
-                let rem = remainingPerAssignment[info.assignment.id] ?? 0
-                if rem <= 0 { return false }
-                let futureDates = assignmentAvailableDates[info.assignment.id]?.filter { $0 > key } ?? []
-                var futurePrefCap = 0.0
-                for d in futureDates { let k = dayKey(d); let dayCaps = capacityPerDay[k]!; let usedPref = allocations[k]?.reduce(0.0, { $0 + $1.value.preferred }) ?? 0.0; futurePrefCap += max(0.0, dayCaps.preferred - usedPref) }
-                return max(0.0, rem - futurePrefCap) == 0
-            }.map { $0.assignment }
-
-            // Helper: Dynamic front-load factor (clamped 1-3)
-            func dynamicFrontLoadFactor(for assignment: AssignmentInput, remaining: Double, urgency: Double) -> Double {
-                // Base factor 1.0, add urgency contribution, and add logarithmic scaling for large tasks
-                let factor = 1.0 + (urgency * 1.0) + log2(remaining + 1.0)/5.0
-                return min(max(1.0, factor), 3.0) // clamp between 1 and 3
-            }
-
-            func frontLoadList(_ list: [AssignmentInput]) {
-                for a in list {
-                    if remainingPreferred <= 0 { break }
-                    let rem = remainingPerAssignment[a.id] ?? 0
-                    if rem <= 0 { continue }
-                    let base = rem / Double(max(1, assignmentAvailableDates[a.id]?.count ?? 1))
-                    let dynamicFactor = dynamicFrontLoadFactor(for: a, remaining: rem, urgency: urgencies[a.id] ?? 0)
-                    // Debug print for dynamic front-load factor and remaining hours
-                    print("DEBUG: Front-load factor for assignment \(a.id) = \(dynamicFactor), remaining hours: \(rem)")
-                    let maxFront = max(0, base * (dynamicFactor - 1.0))
-                    let toFront = min(maxFront, remainingPreferred, rem)
-                    if toFront > 0 {
-                        var existing = allocations[key]?[a.id] ?? (preferred: 0.0, overflow: 0.0, reason: nil)
-                        existing.preferred += toFront
-                        existing.reason = (existing.reason == nil) ? "Front-load preferred" : (existing.reason! + "; Front-load preferred")
-                        allocations[key]?[a.id] = existing
-                        remainingPerAssignment[a.id] = max(0.0, (remainingPerAssignment[a.id] ?? 0) - toFront)
-                        remainingPreferred -= toFront
-                        todayAlloc[a.id] = (todayAlloc[a.id] ?? 0.0) + toFront
-                    }
-                }
-                // Debug print for cumulative front-load allocated today
-                let totalFrontLoadToday = todayAlloc.values.reduce(0, +)
-                print("DEBUG: Total front-load allocated for day \(key) = \(totalFrontLoadToday) hours")
-            }
-
-            frontLoadList(atRisk)
-            if remainingPreferred > 0 { frontLoadList(deferable) }
-
-            // NEW: extra pass to fill any remaining preferred hours with deferable assignments
-            func fillRemainingPreferred(_ list: [AssignmentInput]) {
-                for a in list {
-                    if remainingPreferred <= 0 { break }
-                    let rem = remainingPerAssignment[a.id] ?? 0
-                    if rem <= 0 { continue }
-                    let toAllocate = min(rem, remainingPreferred)
-                    if toAllocate > 0 {
-                        var existing = allocations[key]?[a.id] ?? (preferred: 0.0, overflow: 0.0, reason: nil)
-                        existing.preferred += toAllocate
-                        existing.reason = (existing.reason == nil) ? "Fill remaining preferred" : (existing.reason! + "; Fill remaining preferred")
-                        allocations[key]?[a.id] = existing
-                        remainingPerAssignment[a.id] = max(0.0, rem - toAllocate)
-                        remainingPreferred -= toAllocate
-                    }
-                }
-            }
-
-            if remainingPreferred > 0 { fillRemainingPreferred(deferable) }
-
-            // Pass 3: allocate overflow when necessary (use remainingPerAssignment)
-            var overflowLeft = caps.overflow
-            // sort by increasing urgency (less urgent first)
-            let overflowOrder = infos.sorted { (l, r) -> Bool in (urgencies[l.assignment.id] ?? 0) < (urgencies[r.assignment.id] ?? 0) }
-            for info in overflowOrder {
-                if overflowLeft <= 0 { break }
-                let aid = info.assignment.id
-                let rem = remainingPerAssignment[aid] ?? 0
-                if rem <= 0 { continue }
-                let futureDates = assignmentAvailableDates[aid] ?? []
-                let daysLeft = max(1, futureDates.count)
-                // compute total preferred capacity from today (including today current allocations)
-                var totalPrefAvail = 0.0
-                for d in futureDates {
-                    let k = dayKey(d)
-                    let dayCaps = capacityPerDay[k]!
-                    let usedPref = allocations[k]?.reduce(0.0, { $0 + $1.value.preferred }) ?? 0.0
-                    totalPrefAvail += max(0.0, dayCaps.preferred - usedPref)
-                }
-                let totalShortage = max(0.0, rem - totalPrefAvail)
-                if totalShortage <= 0 { continue }
-                // Dynamic overflow allocation
-                let dynamicOverflowToday = min(rem, (rem / Double(daysLeft)) * 1.2)
-                let allocOverflow = dynamicOverflowToday
-                if allocOverflow > 0 {
-                    var existing = allocations[key]?[aid] ?? (preferred: 0.0, overflow: 0.0, reason: nil)
-                    existing.overflow += allocOverflow
-                    existing.reason = (existing.reason == nil) ? "Global overflow needed to meet deadline" : (existing.reason! + "; Global overflow needed")
-                    allocations[key]?[aid] = existing
-                    remainingPerAssignment[aid] = max(0.0, (remainingPerAssignment[aid] ?? 0) - allocOverflow)
-                    overflowLeft -= allocOverflow
-                }
-            }
-        }
-
-        // After allocations, convert allocations map into PlannedDay blocks (same as before but using allocations map)
-        var plannedDays: [PlannedDay] = []
-        let minBlockSec = 300
-        for date in planningDates {
-            let key = dayKey(date)
-            let dayAlloc = allocations[key] ?? [:]
-            // compute urgencies for return
-            var dayUrgencies: [String: Double] = [:]
-            for a in assignments { dayUrgencies[a.id] = urgencyLive(for: a, remaining: remainingPerAssignment[a.id] ?? 0, on: date) }
-
-            // build blocks sequentially (preferred then overflow)
-            var blocks: [DailyAssignmentBlock] = []
-            guard let origPrefStart = calendar.date(bySettingHour: preferredStartTime.hour ?? 9, minute: preferredStartTime.minute ?? 0, second: 0, of: date),
-                  let prefEnd = calendar.date(bySettingHour: preferredEndTime.hour ?? 17, minute: preferredEndTime.minute ?? 0, second: 0, of: date) else {
-                continue
-            }
-            var current = origPrefStart
-            if calendar.isDateInToday(date) {
-                let nowForToday = currentTime ?? Date()
-                // If current time is after prefEnd, reset to prefStart for allocation
-                if nowForToday >= prefEnd {
-                    current = origPrefStart
-                } else if nowForToday > current {
-                    current = nowForToday
-                }
-            }
-            print("DEBUG: Generating day \(key), prefStart: \(origPrefStart), prefEnd: \(prefEnd), current: \(current)")
-
-            // preferred
-            var cumulative: [String: Double] = [:]
-            for (aid, alloc) in dayAlloc.sorted(by: { lhs, rhs in (dayUrgencies[lhs.key] ?? 0) > (dayUrgencies[rhs.key] ?? 0) }) {
-                guard alloc.preferred > 0 else { continue }
-                guard let a = assignments.first(where: { $0.id == aid }) else { continue }
-                let already = cumulative[aid] ?? 0
-                let remainingForAssign = max(0.0, a.totalHours - a.hoursCompleted - already)
-                let used = min(alloc.preferred, remainingForAssign)
-                if used <= 0 {
-                    print("DEBUG: Skipping block for assignment \(aid), used <= 0")
-                    continue
-                }
-                let maxSec = max(0.0, prefEnd.timeIntervalSince(current))
-                if maxSec <= 0 { break }
-                // Exact block duration in seconds, no extra buffer
-                let durSec = used * 3600.0
-                guard let end = calendar.date(byAdding: .second, value: Int(durSec.rounded()), to: current) else { continue }
-                print("DEBUG: Adding block for assignment \(aid), start: \(current), end: \(end), preferred: \(alloc.preferred), overflow: \(alloc.overflow)")
-                blocks.append(DailyAssignmentBlock(
-                    assignmentId: aid,
-                    startTime: current,
-                    endTime: end,
-                    preferredHours: used,
-                    overflowHours: 0,
-                    bufferLeft: max(0.0, preferredHoursPerDay - used),
-                    overflowReason: dayAlloc[aid]?.reason
-                ))
-                current = end  // remove the extra 5-second buffer
-                cumulative[aid] = (cumulative[aid] ?? 0) + used
-            }
-
-            // overflow
-            current = prefEnd
-            var cumulativeOverflow: [String: Double] = [:]
-            var overflowTuples: [(String, (preferred: Double, overflow: Double, reason: String?))] = []
-            for (aid, alloc) in dayAlloc {
-                if alloc.overflow > 0 {
-                    overflowTuples.append((aid, (preferred: alloc.preferred, overflow: alloc.overflow, reason: alloc.reason)))
-                }
-            }
-            overflowTuples.sort { (l, r) -> Bool in (dayUrgencies[l.0] ?? 0) < (dayUrgencies[r.0] ?? 0) }
-            for (aid, alloc) in overflowTuples {
-                let overflowHoursRaw = alloc.overflow   // use the actual value
-                guard overflowHoursRaw > 0 else { continue }
-                guard let a = assignments.first(where: { $0.id == aid }) else { continue }
-                let already = cumulativeOverflow[aid] ?? 0
-                let remainingForAssign = max(0.0, a.totalHours - a.hoursCompleted - already)
-                let used = min(overflowHoursRaw, remainingForAssign)
-                if used <= 0 {
-                    print("DEBUG: Skipping block for assignment \(aid), used <= 0")
-                    continue
-                }
-                // Exact block duration in seconds, no extra buffer
-                let durSec = used * 3600.0
-                guard let end = calendar.date(byAdding: .second, value: Int(durSec.rounded()), to: current) else { continue }
-                print("DEBUG: Adding block for assignment \(aid), start: \(current), end: \(end), preferred: \(alloc.preferred), overflow: \(alloc.overflow)")
-                blocks.append(
-                    DailyAssignmentBlock(
-                        assignmentId: aid,
-                        startTime: current,
-                        endTime: end,
-                        preferredHours: 0,
-                        overflowHours: used,
-                        bufferLeft: 0,
-                        overflowReason: nil  // no tuple reason available
-                    )
-                )
-                current = end  // remove the extra 5-second buffer
-                cumulativeOverflow[aid] = (cumulativeOverflow[aid] ?? 0) + used
-            }
-
-            // compute onTrack
-            var onTrack = true
-            for (_, alloc) in dayAlloc {
-                let total = alloc.preferred + alloc.overflow
-                if total <= 0 { continue }
-                if alloc.overflow > 0 && (alloc.overflow / total) > 0.10 { onTrack = false; break }
-            }
-            // feasibility check
-            for a in assignments {
-                let avail = assignmentAvailableDates[a.id] ?? []
-                let availCapacitySum = avail.reduce(0.0) { acc, d in let k = dayKey(d); let dayCaps = capacityPerDay[k]!; let usedPref = allocations[k]?.reduce(0.0, { $0 + $1.value.preferred }) ?? 0.0; let usedOverflow = allocations[k]?.reduce(0.0, { $0 + $1.value.overflow }) ?? 0.0; let availPref = max(0.0, dayCaps.preferred - usedPref); let availOverflow = max(0.0, dayCaps.overflow - usedOverflow); return acc + availPref + availOverflow }
-                let plannedForAssignment = planningDates.reduce(0.0) { acc, d in acc + (allocations[dayKey(d)]?[a.id]?.preferred ?? 0.0) + (allocations[dayKey(d)]?[a.id]?.overflow ?? 0.0) }
-                let possibleTotal = a.hoursCompleted + plannedForAssignment + availCapacitySum
-                if possibleTotal + 1e-6 < a.totalHours { onTrack = false; break }
-            }
-
-            var dayUrgenciesReturn: [String: Double] = [:]
-            for a in assignments { dayUrgenciesReturn[a.id] = urgencyLive(for: a, remaining: remainingPerAssignment[a.id] ?? 0, on: date) }
-
-            plannedDays.append(PlannedDay(date: date, assignmentBlocks: blocks, urgencies: dayUrgenciesReturn, allOnTrack: onTrack))
-        }
-
-        return plannedDays
+        return planned
     }
 }
 

@@ -9,7 +9,7 @@ struct ScheduleView: View {
     private var daysWithValidBlocks: [PlannedDay] {
         plannedDays.filter { day in
             day.assignmentBlocks.contains {
-                ($0.preferredHours > 0 || $0.overflowHours > 0) &&
+                ($0.preferredHours > 0 || $0.overflowHours > 0 || ($0.preferredHours == 0 && $0.overflowHours == 0)) &&
                 $0.endTime > $0.startTime &&
                 $0.endTime.timeIntervalSince($0.startTime) >= 60
             }
@@ -20,7 +20,7 @@ struct ScheduleView: View {
         var dict: [Date: [DailyAssignmentBlock]] = [:]
         for day in daysWithValidBlocks {
             let validBlocks = day.assignmentBlocks.filter {
-                ($0.preferredHours > 0 || $0.overflowHours > 0) &&
+                ($0.preferredHours > 0 || $0.overflowHours > 0 || ($0.preferredHours == 0 && $0.overflowHours == 0)) &&
                 $0.endTime > $0.startTime &&
                 $0.endTime.timeIntervalSince($0.startTime) >= 60
             }
@@ -65,6 +65,23 @@ struct ScheduleView: View {
                     } else {
                         Text("Not set")
                     }
+                }
+                // Added Load Bias slider section
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack {
+                        Text("Load Bias: \(settings.loadBias, specifier: "%.2f")")
+                        Spacer()
+                    }
+                    Slider(value: Binding(
+                        get: { settings.loadBias },
+                        set: { newValue in
+                            settings.loadBias = min(max(newValue, 0.5), 1.5)
+                            generateSchedule()
+                        }
+                    ), in: 0.5...1.5, step: 0.01)
+                    Text("1.00 = balanced, <1.00 = front-load, >1.00 = back-load")
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
                 }
             }
             .padding()
@@ -115,9 +132,9 @@ struct ScheduleView: View {
 
                 let durationMinutes = Int((block.endTime.timeIntervalSince(block.startTime) / 60).rounded())
                 if block.preferredHours > 0 {
-                    Text("Preferred: \(durationMinutes) min")
+                    Text("Within Preferred Hours: \(durationMinutes) min")
                 } else if block.overflowHours > 0 {
-                    Text("Overflow: \(durationMinutes) min")
+                    Text("Outside of Preferred Hours: \(durationMinutes) min")
                 }
 
                 Text("\(block.startTime.formatted(date: .omitted, time: .shortened)) - \(block.endTime.formatted(date: .omitted, time: .shortened))")
@@ -135,7 +152,11 @@ struct ScheduleView: View {
             }
         }
         .padding(8)
-        .background(block.overflowHours > 0 ? Color.red.opacity(0.3) : Color.green.opacity(block.preferredHours > 0 ? 0.3 : 0))
+        .background(
+            block.overflowHours > 0 ? Color.red.opacity(0.3) :
+            block.preferredHours > 0 ? Color.green.opacity(0.3) :
+            Color.clear
+        )
         .cornerRadius(6)
     }
 
@@ -184,13 +205,13 @@ struct ScheduleView: View {
 
         let start = settings.preferredStartTime ?? Calendar.current.date(from: DateComponents(hour: 15, minute: 0))!
         let end = settings.preferredEndTime ?? Calendar.current.date(from: DateComponents(hour: 18, minute: 0))!
-        let maxOverflow = settings.maxOverflowHoursPerDay
 
         plannedDays = ScheduleGenerator.generateSchedule(
             assignments: inputs,
             preferredStartTime: Calendar.current.dateComponents([.hour, .minute], from: start),
             preferredEndTime: Calendar.current.dateComponents([.hour, .minute], from: end),
             planningHorizonDays: daysBetween,
+            loadBias: settings.loadBias,
             currentTime: Date()
         )
 

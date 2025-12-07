@@ -1,4 +1,4 @@
-// Reminder: Ensure that ScheduleSettings is created and injected as an environmentObject in your main App struct, e.g.:
+// Reminder: Ensure that ScheduleSettings is created and injected as an environmentObject in your main App struct, e.g.
 //
 // @main
 // struct YourApp: App {
@@ -216,8 +216,22 @@ struct ContentView: View {
                 }
             }
         }
-        .onAppear { auth.restorePreviousSignIn() }
-        .onChangeCompat(auth.isSignedIn) { _, _ in routeIfPossible() }
+        .onAppear {
+            auth.restorePreviousSignIn()
+            if auth.isSignedIn {
+                assignmentsStore.load(for: auth.email)
+            } else {
+                assignmentsStore.load(for: "local")
+            }
+        }
+        .onChangeCompat(auth.isSignedIn) { _, _ in
+            routeIfPossible()
+            if auth.isSignedIn {
+                assignmentsStore.load(for: auth.email)
+            } else {
+                assignmentsStore.load(for: "local")
+            }
+        }
         .onChangeCompat(classroomsStore.hasChosenOnce) { _, _ in routeIfPossible() }
     }
 
@@ -328,7 +342,6 @@ struct AssignmentsView: View {
     @State private var confirmSecondDelete = false
 
     @State private var assignmentToEdit: Assignment? = nil
-    @State private var showEditSheet = false
 
     // New state for showing SettingsView sheet
     @State private var showSettings = false
@@ -361,12 +374,10 @@ struct AssignmentsView: View {
         .contentShape(Rectangle())
         .onTapGesture {
             assignmentToEdit = assignment
-            showEditSheet = true
         }
         .contextMenu {
             Button {
                 assignmentToEdit = assignment
-                showEditSheet = true
             } label: {
                 Label("Edit Duration & Points", systemImage: "slider.horizontal.3")
             }
@@ -469,11 +480,9 @@ struct AssignmentsView: View {
                     classrooms: classroomsStore.allClassrooms
                 )
             }
-            .sheet(isPresented: $showEditSheet) {
-                if let a = assignmentToEdit {
-                    AssignmentEditSheet(assignment: a)
-                        .environmentObject(assignmentsStore)
-                }
+            .sheet(item: $assignmentToEdit) { assignment in
+                AssignmentEditSheet(assignment: assignment)
+                    .environmentObject(assignmentsStore)
             }
             .alert("Delete Assignment?", isPresented: $showDeleteAlert, presenting: assignmentToDelete) { assignment in
                 Button("Delete", role: .destructive) {
@@ -1119,33 +1128,114 @@ struct AssignmentEditSheet: View {
     let assignment: Assignment
     @State private var newTime: Int
     @State private var newImportance: Int
+    @State private var newDueDate: Date
 
     init(assignment: Assignment) {
         self.assignment = assignment
         _newTime = State(initialValue: assignment.aiEstimatedTime)
         _newImportance = State(initialValue: assignment.aiEstimatedImportance)
+        // Use current due date or now for editing
+        _newDueDate = State(initialValue: assignment.hasRealDueDate ? assignment.dueDate : Date())
     }
 
     var body: some View {
         NavigationView {
-            Form {
-                Section(header: Text("Estimated Time (minutes)")) {
-                    TextField("Time (1-1440)", value: $newTime, format: .number)
-                        .keyboardType(.numberPad)
-                        .onChange(of: newTime) { _ in
-                            if newTime < 1 { newTime = 1 }
-                            if newTime > 1440 { newTime = 1440 }
+            ScrollView {
+                VStack(alignment: .leading, spacing: 28) {
+                    // Title Section
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Title")
+                            .font(.headline)
+                        TextField("Title", text: Binding(
+                            get: { assignment.title },
+                            set: { newValue in
+                                if let idx = assignmentsStore.assignments.firstIndex(where: { $0.id == assignment.id }) {
+                                    assignmentsStore.assignments[idx].title = newValue
+                                }
+                            }
+                        ))
+                        .textFieldStyle(.roundedBorder)
+                        .background(Color(.secondarySystemBackground))
+                        .cornerRadius(8)
+                    }
+
+                    // Description Section
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Description")
+                            .font(.headline)
+                        TextEditor(text: Binding(
+                            get: { assignment.description ?? "" },
+                            set: { newValue in
+                                if let idx = assignmentsStore.assignments.firstIndex(where: { $0.id == assignment.id }) {
+                                    assignmentsStore.assignments[idx].description = newValue
+                                }
+                            }
+                        ))
+                        .frame(minHeight: 120)
+                        .padding(6)
+                        .background(Color(.secondarySystemBackground))
+                        .cornerRadius(8)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 8)
+                                .stroke(Color.gray.opacity(0.18), lineWidth: 1)
+                        )
+                    }
+
+                    // Due Date Section
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Due Date")
+                            .font(.headline)
+                        if assignment.hasRealDueDate {
+                            DatePicker("Due Date", selection: $newDueDate, displayedComponents: [.date, .hourAndMinute])
+                                .labelsHidden()
+                                .padding(8)
+                                .background(Color(.secondarySystemBackground))
+                                .cornerRadius(8)
+                        } else {
+                            Label("No Due Date", systemImage: "calendar.badge.exclamationmark")
+                                .foregroundColor(.secondary)
+                                .padding(8)
+                                .background(Color(.secondarySystemBackground))
+                                .cornerRadius(8)
                         }
+                    }
+
+                    // Estimated Time Section
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Estimated Time (minutes)")
+                            .font(.headline)
+                        TextField("Time (1-1440)", value: $newTime, format: .number)
+                            .keyboardType(.numberPad)
+                            .padding(8)
+                            .background(Color(.secondarySystemBackground))
+                            .cornerRadius(8)
+                            .onChange(of: newTime) { _ in
+                                if newTime < 1 { newTime = 1 }
+                                if newTime > 1440 { newTime = 1440 }
+                            }
+                    }
+
+                    // Importance Section
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Importance (1-5)")
+                            .font(.headline)
+                        TextField("Importance (1-5)", value: $newImportance, format: .number)
+                            .keyboardType(.numberPad)
+                            .padding(8)
+                            .background(Color(.secondarySystemBackground))
+                            .cornerRadius(8)
+                            .onChange(of: newImportance) { _ in
+                                if newImportance < 1 { newImportance = 1 }
+                                if newImportance > 5 { newImportance = 5 }
+                            }
+                    }
                 }
-                Section(header: Text("Importance (1-5)")) {
-                    TextField("Importance (1-5)", value: $newImportance, format: .number)
-                        .keyboardType(.numberPad)
-                        .onChange(of: newImportance) { _ in
-                            if newImportance < 1 { newImportance = 1 }
-                            if newImportance > 5 { newImportance = 5 }
-                        }
-                }
+                .padding(.top, 32)
+                .padding(.horizontal)
+                .padding(.bottom, 12)
             }
+            .background(Color(.systemBackground).ignoresSafeArea())
+            .scrollContentBackground(.hidden)
             .navigationTitle("Edit Assignment")
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
@@ -1158,6 +1248,10 @@ struct AssignmentEditSheet: View {
                         if let idx = assignmentsStore.assignments.firstIndex(where: { $0.id == assignment.id }) {
                             assignmentsStore.assignments[idx].aiEstimatedTime = clampedTime
                             assignmentsStore.assignments[idx].aiEstimatedImportance = clampedImportance
+                            if assignment.hasRealDueDate {
+                                assignmentsStore.assignments[idx].dueDate = newDueDate
+                            }
+                            // For assignments with no real due date, do not allow changing due date or toggling
                             dismiss()
                         }
                     }
@@ -1235,3 +1329,4 @@ extension DateFormatter {
         return df
     }
 }
+

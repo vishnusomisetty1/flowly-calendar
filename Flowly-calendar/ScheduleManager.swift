@@ -41,7 +41,10 @@ class ScheduleManager: ObservableObject {
         let schedule = ScheduleGenerator.generateSchedule(
             assignments: assignments,
             preferredStartTime: startComps,
-            preferredEndTime: endComps
+            preferredEndTime: endComps,
+            planningHorizonDays: nil,
+            loadBias: settings.loadBias,
+            currentTime: Date()
         )
         // Debug print front-load factor for each assignment
         
