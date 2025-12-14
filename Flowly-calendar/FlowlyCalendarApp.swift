@@ -7,6 +7,7 @@ struct FlowlyCalendarApp: App {
     @StateObject private var auth = AuthManager.shared
     @StateObject private var classroomsStore = ClassroomsStore()
     @StateObject private var assignmentsStore = AssignmentsStore()
+    @StateObject private var scheduleSettings = ScheduleSettings()
 
     init() {
         GIDSignIn.sharedInstance.configuration = GIDConfiguration(clientID: GoogleConfig.clientID)
@@ -19,6 +20,7 @@ struct FlowlyCalendarApp: App {
                     .environmentObject(auth)
                     .environmentObject(classroomsStore)
                     .environmentObject(assignmentsStore)
+                    .environmentObject(scheduleSettings)
                     .onOpenURL { url in GIDSignIn.sharedInstance.handle(url) }
                     .task { auth.restorePreviousSignIn() }
             }

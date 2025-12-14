@@ -4,16 +4,27 @@ import Foundation
 struct ScheduleView: View {
     @EnvironmentObject var assignmentsStore: AssignmentsStore
     @EnvironmentObject var settings: ScheduleSettings
-    @State private var plannedDays: [PlannedDay] = []
+    @EnvironmentObject var scheduleManager: ScheduleManager
 
     private var daysWithValidBlocks: [PlannedDay] {
-        plannedDays.filter { day in
+        let allDays = scheduleManager.plannedDays
+        print("[DEBUG] ScheduleView: Total planned days: \(allDays.count)")
+        for (idx, day) in allDays.enumerated() {
+            print("[DEBUG] ScheduleView: Day \(idx): date=\(day.date), blocks=\(day.assignmentBlocks.count)")
+            for (blockIdx, block) in day.assignmentBlocks.enumerated() {
+                print("[DEBUG] ScheduleView:   Block \(blockIdx): assignmentId=\(block.assignmentId), start=\(block.startTime), end=\(block.endTime), preferred=\(block.preferredHours), overflow=\(block.overflowHours)")
+            }
+        }
+
+        let filtered = allDays.filter { day in
             day.assignmentBlocks.contains {
                 ($0.preferredHours > 0 || $0.overflowHours > 0 || ($0.preferredHours == 0 && $0.overflowHours == 0)) &&
                 $0.endTime > $0.startTime &&
                 $0.endTime.timeIntervalSince($0.startTime) >= 60
             }
         }
+        print("[DEBUG] ScheduleView: Filtered days with valid blocks: \(filtered.count)")
+        return filtered
     }
 
     private var blocksByDay: [Date: [DailyAssignmentBlock]] {
@@ -28,22 +39,22 @@ struct ScheduleView: View {
         }
         return dict
     }
-    
+
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            // Settings/info panel
-            VStack(alignment: .leading, spacing: 8) {
-                HStack {
+        NavigationView {
+            VStack(alignment: .leading, spacing: 12) {
+                // Settings/info panel
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack {
                     Text("Preferred Start Time:")
                     Spacer()
                     if let _ = Optional(settings.preferredStartTime) {
                         DatePicker("", selection: Binding(
                             get: { settings.preferredStartTime },
-                            set: { newValue in
-                                settings.preferredStartTime = newValue
-                                generateSchedule()
-                            }
+                        set: { newValue in
+                            settings.preferredStartTime = newValue
+                        }
                         ), displayedComponents: .hourAndMinute)
                         .labelsHidden()
                     } else {
@@ -56,10 +67,9 @@ struct ScheduleView: View {
                     if let _ = Optional(settings.preferredEndTime) {
                         DatePicker("", selection: Binding(
                             get: { settings.preferredEndTime },
-                            set: { newValue in
-                                settings.preferredEndTime = newValue
-                                generateSchedule()
-                            }
+                        set: { newValue in
+                            settings.preferredEndTime = newValue
+                        }
                         ), displayedComponents: .hourAndMinute)
                         .labelsHidden()
                     } else {
@@ -76,7 +86,6 @@ struct ScheduleView: View {
                         get: { settings.loadBias },
                         set: { newValue in
                             settings.loadBias = min(max(newValue, 0.5), 1.5)
-                            generateSchedule()
                         }
                     ), in: 0.5...1.5, step: 0.01)
                     Text("1.00 = balanced, <1.00 = front-load, >1.00 = back-load")
@@ -105,14 +114,17 @@ struct ScheduleView: View {
                 }
                 .padding()
             }
-        }
-        .onAppear {
-            print("DEBUG: Generating schedule on appear")
-            generateSchedule()
-        }
-        .onChange(of: assignmentsStore.assignments) { _ in
-            print("DEBUG: Assignments changed, regenerating schedule")
-            generateSchedule()
+            }
+            .navigationTitle("Schedule")
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button {
+                        scheduleManager.forceRegenerate()
+                    } label: {
+                        Image(systemName: "arrow.clockwise")
+                    }
+                }
+            }
         }
     }
 
@@ -160,66 +172,6 @@ struct ScheduleView: View {
         .cornerRadius(6)
     }
 
-    private func generateSchedule() {
-        print("DEBUG: Starting schedule generation")
-        print("DEBUG: Preferred Start Time (raw):", settings.preferredStartTime ?? "nil")
-        print("DEBUG: Preferred End Time (raw):", settings.preferredEndTime ?? "nil")
-
-        // Only use incomplete assignments for scheduling
-        let inputs = assignmentsStore.incompleteAssignments.compactMap { a -> AssignmentInput? in
-            guard a.hasRealDueDate else {
-                print("DEBUG: Skipping assignment \(a.title) — no real due date")
-                return nil
-            }
-            let remainingMinutes = max(0, a.aiEstimatedTime - a.minutesCompleted)
-            guard remainingMinutes > 0 else {
-                print("DEBUG: Skipping assignment \(a.title) — no remaining time")
-                return nil
-            }
-            return AssignmentInput(
-                id: a.id.uuidString,
-                dueDate: a.dueDate,
-                totalHours: Double(remainingMinutes) / 60.0,
-                hoursCompleted: 0,
-                importance: Double(a.aiEstimatedImportance)
-            )
-        }
-
-        print("DEBUG: Filtered assignment inputs (\(inputs.count)):")
-        for input in inputs {
-            print(" - \(input.id), due: \(input.dueDate), totalHours: \(input.totalHours), importance: \(input.importance)")
-        }
-
-        guard !inputs.isEmpty else {
-            print("DEBUG: No assignments available for scheduling.")
-            plannedDays = []
-            return
-        }
-
-        let calendar = Calendar.current
-        let today = calendar.startOfDay(for: Date())
-        let latestDue = inputs.map { $0.dueDate }.max() ?? today
-        let daysBetween = max(1, calendar.dateComponents([.day], from: today, to: calendar.startOfDay(for: latestDue)).day ?? 0) + 1
-
-        print("DEBUG: Scheduling over \(daysBetween) days")
-
-        let start = settings.preferredStartTime ?? Calendar.current.date(from: DateComponents(hour: 15, minute: 0))!
-        let end = settings.preferredEndTime ?? Calendar.current.date(from: DateComponents(hour: 18, minute: 0))!
-
-        plannedDays = ScheduleGenerator.generateSchedule(
-            assignments: inputs,
-            preferredStartTime: Calendar.current.dateComponents([.hour, .minute], from: start),
-            preferredEndTime: Calendar.current.dateComponents([.hour, .minute], from: end),
-            planningHorizonDays: daysBetween,
-            loadBias: settings.loadBias,
-            currentTime: Date()
-        )
-
-        print("DEBUG: Schedule generation complete. Planned days: \(plannedDays.count)")
-        for day in plannedDays {
-            print(" - \(day.date): \(day.assignmentBlocks.count) blocks")
-        }
-    }
 }
 
 fileprivate extension ScheduleView {
@@ -243,5 +195,6 @@ fileprivate extension ScheduleView {
     ScheduleView()
         .environmentObject(AssignmentsStore())
         .environmentObject(ScheduleSettings())
+        .environmentObject(ScheduleManager(assignments: [], settings: ScheduleSettings()))
 }
 #endif

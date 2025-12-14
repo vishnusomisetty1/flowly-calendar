@@ -15,8 +15,8 @@ public struct AssignmentInput {
     }
 }
 
-public struct DailyAssignmentBlock: Identifiable {
-    public let id = UUID()
+public struct DailyAssignmentBlock: Identifiable, Codable {
+    public let id: UUID
     public let assignmentId: String
     public let startTime: Date
     public let endTime: Date
@@ -25,6 +25,7 @@ public struct DailyAssignmentBlock: Identifiable {
     public let bufferLeft: Double
     public let overflowReason: String?
     public init(assignmentId: String, startTime: Date, endTime: Date, preferredHours: Double, overflowHours: Double, bufferLeft: Double, overflowReason: String?) {
+        self.id = UUID()
         self.assignmentId = assignmentId
         self.startTime = startTime
         self.endTime = endTime
@@ -35,7 +36,7 @@ public struct DailyAssignmentBlock: Identifiable {
     }
 }
 
-public struct PlannedDay {
+public struct PlannedDay: Codable {
     public let date: Date
     public let assignmentBlocks: [DailyAssignmentBlock]
     public let urgencies: [String: Double]
@@ -367,4 +368,3 @@ public struct ScheduleGenerator {
         return planned
     }
 }
-

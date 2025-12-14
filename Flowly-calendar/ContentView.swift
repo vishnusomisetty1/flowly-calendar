@@ -182,7 +182,7 @@ struct ContentView: View {
 
     enum Screen { case welcome, googleSignIn, classroomSelection, assignments }
 
-    @StateObject private var scheduleSettings = ScheduleSettings()
+    @EnvironmentObject private var scheduleSettings: ScheduleSettings
 
     var body: some View {
         Group {
@@ -211,7 +211,6 @@ struct ContentView: View {
 
                     case .assignments:
                         MainTabView(currentScreen: $currentScreen)
-                            .environmentObject(scheduleSettings)
                     }
                 }
             }
@@ -269,9 +268,11 @@ struct WelcomeView: View {
 
 struct MainTabView: View {
     @EnvironmentObject private var auth: AuthManager
+    @EnvironmentObject private var assignmentsStore: AssignmentsStore
+    @EnvironmentObject private var scheduleSettings: ScheduleSettings
     @Binding var currentScreen: ContentView.Screen
 
-    @EnvironmentObject private var scheduleSettings: ScheduleSettings
+    @State private var scheduleManager: ScheduleManager?
 
     var body: some View {
         TabView {
@@ -281,15 +282,66 @@ struct MainTabView: View {
                 }
 
             if #available(iOS 26.0, *) {
-                ScheduleView()
-                    .environmentObject(scheduleSettings)
-                    .tabItem {
-                        Label("Schedule", systemImage: "calendar")
-                    }
+                if let scheduleManager = scheduleManager {
+                    ScheduleView()
+                        .environmentObject(scheduleManager)
+                        .tabItem {
+                            Label("Schedule", systemImage: "calendar")
+                        }
+                } else {
+                    Text("Loading schedule...")
+                        .tabItem {
+                            Label("Schedule", systemImage: "calendar")
+                        }
+                }
             } else {
                 // Fallback on earlier versions
             }
         }
+        .onAppear {
+            // Initialize ScheduleManager with actual settings if not already created
+            if scheduleManager == nil {
+                scheduleManager = ScheduleManager(assignments: [], settings: scheduleSettings)
+            }
+            // Update ScheduleManager with current assignments
+            updateScheduleManager()
+        }
+        .onChangeCompat(assignmentsStore.assignments) { _, _ in
+            updateScheduleManager()
+        }
+        .onChangeCompat(scheduleSettings.preferredStartInterval) { _, _ in
+            updateScheduleManager()
+        }
+        .onChangeCompat(scheduleSettings.preferredEndInterval) { _, _ in
+            updateScheduleManager()
+        }
+        .onChangeCompat(scheduleSettings.loadBias) { _, _ in
+            updateScheduleManager()
+        }
+    }
+
+    private func updateScheduleManager() {
+        guard let scheduleManager = scheduleManager else { return }
+
+        // Update settings reference if it changed
+        if scheduleManager.settings !== scheduleSettings {
+            scheduleManager.settings = scheduleSettings
+        }
+
+        // Convert assignments to AssignmentInput format
+        let inputs = assignmentsStore.incompleteAssignments.compactMap { a -> AssignmentInput? in
+            guard a.hasRealDueDate else { return nil }
+            let remainingMinutes = max(0, a.aiEstimatedTime - a.minutesCompleted)
+            guard remainingMinutes > 0 else { return nil }
+            return AssignmentInput(
+                id: a.id.uuidString,
+                dueDate: a.dueDate,
+                totalHours: Double(remainingMinutes) / 60.0,
+                hoursCompleted: 0,
+                importance: Double(a.aiEstimatedImportance)
+            )
+        }
+        scheduleManager.updateAssignments(inputs)
     }
 }
 
@@ -1314,4 +1366,3 @@ extension DateFormatter {
         return df
     }
 }
-
